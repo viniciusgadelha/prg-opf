@@ -38,7 +38,7 @@ def define_sets(model, input_data):
     return model
 
 
-def define_parameters(model, input_data, K=1):
+def define_parameters(model, input_data):
     """Declare all model parameters and line sets."""
 
     params = input_data['params']
@@ -86,12 +86,9 @@ def define_parameters(model, input_data, K=1):
     model.S_ref = Param(initialize=params['Sbase'])
     model.M = Param(initialize=params['BigM'])
 
-    # Loss coefficients
-    model.loss_c0 = Param(initialize=params['loss_c0'])
-    model.loss_c1 = Param(initialize=params['loss_c1'])
-
-    # Selectable factor for power router losses scaling
-    model.K = Param(initialize=K)
+    # Per-port loss coefficients
+    model.port_loss_c0 = Param(model.PR_PORT, initialize=input_data['port_loss_c0'])
+    model.port_loss_c1 = Param(model.PR_PORT, initialize=input_data['port_loss_c1'])
 
     enable_constraints = {
         'terminal_pr': has_terminal_pr,

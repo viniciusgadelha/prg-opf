@@ -32,7 +32,8 @@ pip install -r requirements.txt
 python main.py
 
 # Specify input, output directory, and loss factor
-python main.py -i data/cs2/input.xlsx -o results/ --K 1.0
+# You can use the three examples present in data/examples/ to try out.
+python main.py -i data/input.xlsx -o results/ --K 1.0
 
 # Skip the interactive plot
 python main.py --no-plot

@@ -72,6 +72,17 @@ def load_input_excel(filepath):
             if name in params:
                 params[name] = float(row['value'])
 
+    # --- Per-port loss coefficients (c0, c1 columns override global defaults) ---
+    has_c0 = 'c0' in pr_df.columns
+    has_c1 = 'c1' in pr_df.columns
+    port_loss_c0 = {}
+    port_loss_c1 = {}
+    for _, r in pr_df.iterrows():
+        pr_id = int(r['PR'])
+        port_id = int(r['Port'])
+        port_loss_c0[(pr_id, port_id)] = float(r['c0']) if has_c0 and pd.notna(r.get('c0')) else params['loss_c0']
+        port_loss_c1[(pr_id, port_id)] = float(r['c1']) if has_c1 and pd.notna(r.get('c1')) else params['loss_c1']
+
     # --- Derive sets from Power Routers sheet ---
     pr_list = sorted(pr_df['PR'].unique().tolist())
 
@@ -161,4 +172,6 @@ def load_input_excel(filepath):
         'ac_lines': ac_lines,
         'dc_lines': dc_lines,
         'params': params,
+        'port_loss_c0': port_loss_c0,
+        'port_loss_c1': port_loss_c1,
     }

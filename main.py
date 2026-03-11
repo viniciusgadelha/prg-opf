@@ -36,10 +36,6 @@ def main():
         help='Solver name (default: gurobi)',
     )
     parser.add_argument(
-        '--K', type=float, default=1.0,
-        help='Loss scaling factor (default: 1.0)',
-    )
-    parser.add_argument(
         '--time-limit', type=int, default=600,
         help='Solver time limit in seconds (default: 600)',
     )
@@ -62,7 +58,7 @@ def main():
     print('Initializing model and loading data...')
     model = AbstractModel()
     model = define_sets(model, input_data)
-    model, enable_constraints = define_parameters(model, input_data, K=args.K)
+    model, enable_constraints = define_parameters(model, input_data)
     model = define_variables(model, enable_constraints)
 
     # 3. Build OPF formulation (constraints + objective)

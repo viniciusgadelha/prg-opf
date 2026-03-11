@@ -26,21 +26,11 @@ def add_port_loss_constraints(model):
     model.port_loss_rule3 = Constraint(model.PR_PORT, rule=port_loss_rule3)
 
     def port_loss_rule4(model, pr, port):
-        c0 = model.loss_c0
-        c1 = model.loss_c1
-        if pr == 2:
-            c0 = model.K * c0
-            c1 = model.K * c1
-        return model.P_LOSS_POS[port] == model.y[port] * c0 + model.P_POS[port] * c1
+        return model.P_LOSS_POS[port] == model.y[port] * model.port_loss_c0[pr, port] + model.P_POS[port] * model.port_loss_c1[pr, port]
     model.port_loss_rule4 = Constraint(model.PR_PORT, rule=port_loss_rule4)
 
     def port_loss_rule5(model, pr, port):
-        c0 = model.loss_c0
-        c1 = model.loss_c1
-        if pr == 2:
-            c0 = model.K * c0
-            c1 = model.K * c1
-        return model.P_LOSS_NEG[port] == (1 - model.y[port]) * c0 + model.P_NEG[port] * c1
+        return model.P_LOSS_NEG[port] == (1 - model.y[port]) * model.port_loss_c0[pr, port] + model.P_NEG[port] * model.port_loss_c1[pr, port]
     model.port_loss_rule5 = Constraint(model.PR_PORT, rule=port_loss_rule5)
 
     def port_loss_rule6(model, pr, port):
