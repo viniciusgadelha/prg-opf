@@ -8,6 +8,7 @@ loss allocation across a meshed AC/DC grid containing Power Routers.
 
 - **MILP / MIQCP** formulation with Big-M loss decomposition and SOCP relaxation
 - Gurobi solver integration (configurable time-limit and non-convexity handling)
+- **Per-port loss coefficients** for detailed converter modeling (c0, c1 per Power Router port)
 - Unified Excel-based input format (Power Routers, Buses, AC Lines, DC Lines, Parameters)
 - Automatic results export to Excel (nodes & lines sheets)
 - Interactive topology visualisation with Plotly
@@ -31,9 +32,9 @@ pip install -r requirements.txt
 # Run with the default case study
 python main.py
 
-# Specify input, output directory, and loss factor
-# You can use the three examples present in data/examples/ to try out.
-python main.py -i data/input.xlsx -o results/ --K 1.0
+# Specify input and output directory
+# You can use the three examples present in data/examples/ to try out
+python main.py -i data/examples/3PR-setup.xlsx -o results/
 
 # Skip the interactive plot
 python main.py --no-plot
@@ -43,10 +44,9 @@ python main.py --no-plot
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-i`, `--input` | `data/cs2/input.xlsx` | Path to the unified Excel input file |
+| `-i`, `--input` | `data/input.xlsx` | Path to the unified Excel input file |
 | `-o`, `--output` | `results/` | Directory for result files |
 | `--solver` | `gurobi` | Solver name |
-| `--K` | `1.0` | Loss scaling factor |
 | `--time-limit` | `600` | Solver wall-clock limit (seconds) |
 | `--plot` / `--no-plot` | `--plot` | Generate interactive topology HTML |
 
@@ -77,13 +77,22 @@ The solver expects a single Excel workbook with these sheets:
 
 | Sheet | Key Columns |
 |-------|-------------|
-| **Power Routers** | `PR`, `Port`, `Type` (slack, ext_grid, pq, v-f, terminal), `V_setpoint`, `P_setpoint`, `Q_setpoint` |
+| **Power Routers** | `PR`, `Port`, `Type` (slack, ext_grid, pq, v-f, terminal), `V_setpoint`, `P_setpoint`, `Q_setpoint`, `c0`, `c1` |
 | **Buses** | `Bus`, `Port`, `P_setpoint`, `Q_setpoint` |
 | **AC Lines** | `From_Port`, `To_Port`, `R`, `X`, `Smax` |
 | **DC Lines** | `From_Port`, `To_Port`, `R`, `X`, `Smax` |
-| **Parameters** | `Vbase`, `Sbase`, `BigM`, `loss_c0`, `loss_c1` |
+| **Parameters** | `Sbase`, `Vbase_squared`, `BigM`, `loss_c0`, `loss_c1` |
 
-See `data/cs2/input.xlsx` for a working example.
+### Loss Coefficients
+
+Loss coefficients (`c0`, `c1`) can be specified **per-port** in the Power Routers sheet.
+If not provided, the solver falls back to the global defaults from the Parameters sheet:
+- `c0`: constant loss term (default: `-5.82e-5`)
+- `c1`: linear loss term (default: `1.54e-3`)
+
+This allows modeling ports with different converter characteristics (e.g., MMC vs. traditional converters).
+
+See `data/input.xlsx` or the examples in `data/examples/` for working cases.
 
 ## License
 
