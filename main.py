@@ -3,7 +3,7 @@ main.py — Entry point for the PRG Optimal Power Flow solver.
 
 Usage examples:
     python main.py
-    python main.py -i data/cs2/input.xlsx -o results/ --K 1
+    python main.py -i data/examples/ieee14.xlsx
     python main.py --no-plot
 """
 
