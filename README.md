@@ -83,6 +83,11 @@ The solver expects a single Excel workbook with these sheets:
 | **DC Lines** | `From_Port`, `To_Port`, `R`, `X`, `Smax` |
 | **Parameters** | `Sbase`, `Vbase_squared`, `BigM`, `loss_c0`, `loss_c1` |
 
+For `Type = pq` in **Power Routers**:
+- `P_setpoint` and `Q_setpoint` are optional.
+- If provided, the model enforces those values as equality constraints.
+- If left blank, the optimizer determines the corresponding PQ-port setpoint.
+
 ### Loss Coefficients
 
 Loss coefficients (`c0`, `c1`) can be specified **per-port** in the Power Routers sheet.

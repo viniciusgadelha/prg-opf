@@ -98,6 +98,20 @@ def add_terminal_constraints(model, enable_constraints):
         model.terminal_port_Q_bus_rule = Constraint(model.TERMINAL_PORT_BUS, rule=terminal_port_Q_bus_rule)
 
 
+def add_pq_setpoint_constraints(model, enable_constraints):
+    """Fix PQ port P/Q only where setpoints are provided in input."""
+
+    if enable_constraints['pq_p_set']:
+        def pq_port_P_setpoint_rule(model, pr, port):
+            return model.P[port] == model.pq_port_P_setpoint[pr, port] * model.S_ref
+        model.pq_port_P_setpoint_rule = Constraint(model.PQ_PORT_P_SET, rule=pq_port_P_setpoint_rule)
+
+    if enable_constraints['pq_q_set']:
+        def pq_port_Q_setpoint_rule(model, pr, port):
+            return model.Q[port] == model.pq_port_Q_setpoint[pr, port] * model.S_ref
+        model.pq_port_Q_setpoint_rule = Constraint(model.PQ_PORT_Q_SET, rule=pq_port_Q_setpoint_rule)
+
+
 # ── Reactive power forcing (Q = 0 on PQ / slack / ext_grid ports) ───────
 
 def _compute_q_exempt(input_data):
@@ -107,8 +121,6 @@ def _compute_q_exempt(input_data):
     (which would force A=0, making the line dead).
     """
     q_zero = set()
-    for _, p in input_data['sets']['PQ_PORT']:
-        q_zero.add(p)
     for _, p in input_data['sets']['EXT_GRID']:
         q_zero.add(p)
     for _, p in input_data['sets']['SLACK_PORT']:
@@ -126,13 +138,7 @@ def _compute_q_exempt(input_data):
 
 
 def add_reactive_constraints(model, q_exempt):
-    """Force Q=0 on PQ, slack, and ext_grid ports (with exemptions)."""
-
-    def reactive_power_flow_PQ(model, pr, p):
-        if p in q_exempt:
-            return Constraint.Skip
-        return model.Q[p] == 0
-    model.reactive_power_flow_PQ = Constraint(model.PQ_PORT, rule=reactive_power_flow_PQ)
+    """Force Q=0 on slack and ext_grid ports (with exemptions)."""
 
     def reactive_power_flow_forced(model):
         return [model.Q[port] == 0 for (pr, port) in model.SLACK_PORT]
@@ -258,6 +264,7 @@ def build_formulation(model, enable_constraints, input_data):
     add_port_loss_constraints(model)
     add_power_flow_constraints(model)
     add_terminal_constraints(model, enable_constraints)
+    add_pq_setpoint_constraints(model, enable_constraints)
     add_reactive_constraints(model, q_exempt)
     add_bus_constraints(model)
 

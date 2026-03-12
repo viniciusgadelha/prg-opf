@@ -81,6 +81,31 @@ def define_parameters(model, input_data):
     model.V_PORT = Set(dimen=2, within=model.PR_PORT, initialize=input_data['v_ports'])
     model.v_port_voltage = Param(model.V_PORT, initialize=input_data['v_port_values'])
 
+    # Optional fixed setpoints for PQ ports
+    has_pq_p_set = bool(input_data['pq_port_p_setpoints'])
+    if has_pq_p_set:
+        model.PQ_PORT_P_SET = Set(
+            dimen=2,
+            within=model.PQ_PORT,
+            initialize=list(input_data['pq_port_p_setpoints'].keys()),
+        )
+        model.pq_port_P_setpoint = Param(
+            model.PQ_PORT_P_SET,
+            initialize=input_data['pq_port_p_setpoints'],
+        )
+
+    has_pq_q_set = bool(input_data['pq_port_q_setpoints'])
+    if has_pq_q_set:
+        model.PQ_PORT_Q_SET = Set(
+            dimen=2,
+            within=model.PQ_PORT,
+            initialize=list(input_data['pq_port_q_setpoints'].keys()),
+        )
+        model.pq_port_Q_setpoint = Param(
+            model.PQ_PORT_Q_SET,
+            initialize=input_data['pq_port_q_setpoints'],
+        )
+
     # Base parameters (voltage = V² as part of the linearization)
     model.V_ref = Param(initialize=params['Vbase_squared'])
     model.S_ref = Param(initialize=params['Sbase'])
@@ -94,6 +119,8 @@ def define_parameters(model, input_data):
         'terminal_pr': has_terminal_pr,
         'terminal_bus': has_terminal_bus,
         'dc_lines': has_dc,
+        'pq_p_set': has_pq_p_set,
+        'pq_q_set': has_pq_q_set,
     }
     return model, enable_constraints
 

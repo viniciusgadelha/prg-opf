@@ -8,6 +8,11 @@ consumed by the model builder, constraint formulation, and plotter.
 import pandas as pd
 
 
+def _has_value(value):
+    """Return True when an Excel cell contains a meaningful value."""
+    return pd.notna(value) and str(value).strip() != ''
+
+
 def load_input_excel(filepath):
     """
     Load a unified input Excel file and return all data needed by the PRG optimization.
@@ -17,11 +22,13 @@ def load_input_excel(filepath):
             Type can be (case-insensitive):
                 slack,ext_grid  – slack port connected to external grid (requires V_setpoint)
                 slack           – slack port connected to lines (no V_setpoint)
-                pq              – power-control port
+                pq              – power-control port (optional P_setpoint/Q_setpoint)
                 v-f             – voltage-frequency control port (requires V_setpoint)
                 terminal        – terminal port with load/generation (requires P_setpoint, Q_setpoint)
             V_setpoint: voltage squared [kV²] for voltage-controlled ports (leave blank otherwise)
-            P_setpoint, Q_setpoint: active/reactive power [MW/MVAR] for terminal ports (leave blank otherwise)
+            P_setpoint, Q_setpoint: active/reactive power [MW/MVAR]
+                - terminal ports: required
+                - pq ports: optional fixed setpoints (blank -> optimized by OPF)
 
         - "Buses": columns [Bus, Port, P_setpoint, Q_setpoint]
             P_setpoint, Q_setpoint: active/reactive power for loads at bus (leave blank if none)
@@ -107,11 +114,23 @@ def load_input_excel(filepath):
     v_ports = []
     v_port_values = {}
     for _, r in pr_df.iterrows():
-        if pd.notna(r.get('V_setpoint')) and r['V_setpoint'] != '':
+        if _has_value(r.get('V_setpoint')):
             pr_id = int(r['PR'])
             port_id = int(r['Port'])
             v_ports.append((pr_id, port_id))
             v_port_values[(pr_id, port_id)] = float(r['V_setpoint'])
+
+    # Optional fixed setpoints for PQ ports (blank cells remain unconstrained)
+    pq_port_p_setpoints = {}
+    pq_port_q_setpoints = {}
+    for _, r in pr_df.iterrows():
+        if 'pq' in r['Type']:
+            pr_id = int(r['PR'])
+            port_id = int(r['Port'])
+            if _has_value(r.get('P_setpoint')):
+                pq_port_p_setpoints[(pr_id, port_id)] = float(r['P_setpoint'])
+            if _has_value(r.get('Q_setpoint')):
+                pq_port_q_setpoints[(pr_id, port_id)] = float(r['Q_setpoint'])
 
     # Terminal ports on PRs (Type == 'terminal')
     terminal_ports = []
@@ -130,7 +149,7 @@ def load_input_excel(filepath):
     terminal_port_bus_p = {}
     terminal_port_bus_q = {}
     for _, r in bus_df.iterrows():
-        if pd.notna(r.get('P_setpoint')) and r['P_setpoint'] != '':
+        if _has_value(r.get('P_setpoint')):
             bus_id = r['Bus']
             port_id = int(r['Port'])
             terminal_ports_bus.append((bus_id, port_id))
@@ -169,6 +188,8 @@ def load_input_excel(filepath):
         'terminal_ports_bus': terminal_ports_bus,
         'terminal_port_bus_p': terminal_port_bus_p,
         'terminal_port_bus_q': terminal_port_bus_q,
+        'pq_port_p_setpoints': pq_port_p_setpoints,
+        'pq_port_q_setpoints': pq_port_q_setpoints,
         'ac_lines': ac_lines,
         'dc_lines': dc_lines,
         'params': params,
