@@ -26,55 +26,88 @@ from prg_opf.results import _get_dc_voltage_ports
 
 # ─── helpers ──────────────────────────────────────────────────────────────
 
-def _override_dict_by_port(d: dict, port_id: int, val):
-    """Set *val* for the first key ``(owner, port_id)`` found in *d*."""
+def _override_dict_by_port(d: dict, port_id: int, val) -> bool:
+    """Set *val* for the first key ``(owner, port_id)`` found in *d*.
+    Returns True if the entry was found and updated, False otherwise."""
     for key in d:
         if key[1] == port_id:
             d[key] = val
-            return
+            return True
+    return False
 
 
-def _override_or_add_bus_terminal(data: dict, port_id: int, pq: str, val):
-    """Override — or insert — a bus-terminal P/Q entry."""
+def _override_or_add_pq_setpoint(data: dict, port_id: int,
+                                  pq: str, val) -> bool:
+    """Override — or insert — a PQ port P/Q setpoint.
+
+    Looks up the PR that owns *port_id* from PR_PORT, then updates (or adds)
+    the entry in ``pq_port_p_setpoints`` / ``pq_port_q_setpoints``.
+    Returns True if applied.
+    """
+    dkey = 'pq_port_p_setpoints' if pq == 'P' else 'pq_port_q_setpoints'
+    target = data[dkey]
+    # Try to update existing entry
+    for key in target:
+        if key[1] == port_id:
+            target[key] = val
+            return True
+    # Not found → add, looking up the PR that owns this port
+    for pr_id, pid in data['sets']['PR_PORT']:
+        if int(pid) == port_id:
+            target[(pr_id, port_id)] = val
+            return True
+    return False
+
+
+def _override_or_add_bus_terminal(data: dict, port_id: int, pq: str, val) -> bool:
+    """Override — or insert — a bus-terminal P/Q entry.
+    Returns True if applied, False if the port's bus could not be found."""
     dkey = 'terminal_port_bus_p' if pq == 'P' else 'terminal_port_bus_q'
     target = data[dkey]
     for key in target:
         if key[1] == port_id:
             target[key] = val
-            return
+            return True
     # Not found → add, looking up the bus that owns this port
     for bus_id, pid in data['sets']['BUS_PORT']:
         if int(pid) == port_id:
             target[(bus_id, port_id)] = val
             if (bus_id, port_id) not in data['terminal_ports_bus']:
                 data['terminal_ports_bus'].append((bus_id, port_id))
-            return
+            return True
+    return False
 
 
-def _override_v_setpoint(data: dict, port_id: int, val):
-    """Override voltage setpoint for any port that has one, or add it."""
+def _override_v_setpoint(data: dict, port_id: int, val) -> bool:
+    """Override voltage setpoint for any port that has one, or add it.
+    Returns True if applied."""
     for key in data['v_port_values']:
         if key[1] == port_id:
             data['v_port_values'][key] = val
-            return
+            return True
     # Port not yet voltage-controlled → find its PR/bus owner and add
     for owner, pid in data['sets']['PR_PORT']:
         if int(pid) == port_id:
             data['v_port_values'][(owner, port_id)] = val
             if (owner, port_id) not in data['v_ports']:
                 data['v_ports'].append((owner, port_id))
-            return
+            return True
+    return False
 
 
 def _apply_timestep_overrides(base_data: dict,
                               sens_ports_df: pd.DataFrame,
                               sens_lines_df: pd.DataFrame | None,
-                              timestep) -> dict:
+                              timestep,
+                              verbose: bool = False) -> dict:
     """Deep-copy *base_data* and apply the sens_input overrides for *timestep*."""
     data = copy.deepcopy(base_data)
 
     # ── Port overrides ────────────────────────────────────────────────
     ts_rows = sens_ports_df[sens_ports_df['Timestep'] == timestep]
+
+    if verbose:
+        print(f'  Port overrides for timestep {timestep}: {len(ts_rows)} row(s)')
 
     for _, row in ts_rows.iterrows():
         port_id = int(row['Port'])
@@ -82,53 +115,114 @@ def _apply_timestep_overrides(base_data: dict,
 
         # Voltage setpoint (any type can carry one)
         if pd.notna(row.get('V_setpoint')):
-            _override_v_setpoint(data, port_id, float(row['V_setpoint']))
+            ok = _override_v_setpoint(data, port_id, float(row['V_setpoint']))
+            if verbose:
+                status = 'OK' if ok else 'WARNING: port not found'
+                print(f'    Port {port_id} V_setpoint={row["V_setpoint"]}  [{status}]')
+            elif not ok:
+                print(f'  [sensitivity WARNING] Port {port_id}: V_setpoint override '
+                      f'failed — port not found in v_port_values/PR_PORT')
 
         if ptype == 'v-f':
             if pd.notna(row.get('Q_setpoint')):
-                _override_dict_by_port(data.get('pq_port_q_setpoints', {}),
-                                       port_id, float(row['Q_setpoint']))
+                ok = _override_dict_by_port(data.get('pq_port_q_setpoints', {}),
+                                            port_id, float(row['Q_setpoint']))
+                if verbose:
+                    status = 'OK' if ok else 'WARNING: port not found'
+                    print(f'    Port {port_id} (v-f) Q_setpoint={row["Q_setpoint"]}  [{status}]')
+                elif not ok:
+                    print(f'  [sensitivity WARNING] Port {port_id} (v-f): Q_setpoint '
+                          f'override failed — port not found')
 
         elif ptype == 'terminal_bus':
             if pd.notna(row.get('P_setpoint')):
-                _override_or_add_bus_terminal(data, port_id, 'P',
-                                              float(row['P_setpoint']))
+                ok = _override_or_add_bus_terminal(data, port_id, 'P',
+                                                   float(row['P_setpoint']))
+                if verbose:
+                    status = 'OK' if ok else 'WARNING: bus not found'
+                    print(f'    Port {port_id} (terminal_bus) P_setpoint={row["P_setpoint"]}  [{status}]')
+                elif not ok:
+                    print(f'  [sensitivity WARNING] Port {port_id} (terminal_bus): '
+                          f'P_setpoint override failed — bus not found')
             if pd.notna(row.get('Q_setpoint')):
-                _override_or_add_bus_terminal(data, port_id, 'Q',
-                                              float(row['Q_setpoint']))
+                ok = _override_or_add_bus_terminal(data, port_id, 'Q',
+                                                   float(row['Q_setpoint']))
+                if verbose:
+                    status = 'OK' if ok else 'WARNING: bus not found'
+                    print(f'    Port {port_id} (terminal_bus) Q_setpoint={row["Q_setpoint"]}  [{status}]')
+                elif not ok:
+                    print(f'  [sensitivity WARNING] Port {port_id} (terminal_bus): '
+                          f'Q_setpoint override failed — bus not found')
 
         elif ptype == 'terminal':
             if pd.notna(row.get('P_setpoint')):
-                _override_dict_by_port(data['terminal_port_p'], port_id,
-                                       float(row['P_setpoint']))
+                ok = _override_dict_by_port(data['terminal_port_p'], port_id,
+                                            float(row['P_setpoint']))
+                if verbose:
+                    status = 'OK' if ok else 'WARNING: port not found'
+                    print(f'    Port {port_id} (terminal) P_setpoint={row["P_setpoint"]}  [{status}]')
+                elif not ok:
+                    print(f'  [sensitivity WARNING] Port {port_id} (terminal): '
+                          f'P_setpoint override failed — port not found')
             if pd.notna(row.get('Q_setpoint')):
-                _override_dict_by_port(data['terminal_port_q'], port_id,
-                                       float(row['Q_setpoint']))
+                ok = _override_dict_by_port(data['terminal_port_q'], port_id,
+                                            float(row['Q_setpoint']))
+                if verbose:
+                    status = 'OK' if ok else 'WARNING: port not found'
+                    print(f'    Port {port_id} (terminal) Q_setpoint={row["Q_setpoint"]}  [{status}]')
+                elif not ok:
+                    print(f'  [sensitivity WARNING] Port {port_id} (terminal): '
+                          f'Q_setpoint override failed — port not found')
 
         elif ptype == 'pq':
             if pd.notna(row.get('P_setpoint')):
-                _override_dict_by_port(data['pq_port_p_setpoints'], port_id,
-                                       float(row['P_setpoint']))
+                ok = _override_or_add_pq_setpoint(data, port_id, 'P',
+                                                   float(row['P_setpoint']))
+                if verbose:
+                    status = 'OK' if ok else 'WARNING: port not found in PR_PORT'
+                    print(f'    Port {port_id} (pq) P_setpoint={row["P_setpoint"]}  [{status}]')
+                elif not ok:
+                    print(f'  [sensitivity WARNING] Port {port_id} (pq): '
+                          f'P_setpoint override failed — port not found in PR_PORT')
             if pd.notna(row.get('Q_setpoint')):
-                _override_dict_by_port(data['pq_port_q_setpoints'], port_id,
-                                       float(row['Q_setpoint']))
+                ok = _override_or_add_pq_setpoint(data, port_id, 'Q',
+                                                   float(row['Q_setpoint']))
+                if verbose:
+                    status = 'OK' if ok else 'WARNING: port not found in PR_PORT'
+                    print(f'    Port {port_id} (pq) Q_setpoint={row["Q_setpoint"]}  [{status}]')
+                elif not ok:
+                    print(f'  [sensitivity WARNING] Port {port_id} (pq): '
+                          f'Q_setpoint override failed — port not found in PR_PORT')
+
+        else:
+            print(f'  [sensitivity WARNING] Port {port_id}: unrecognised Type '
+                  f'"{row["Type"]}" — expected one of: pq, terminal, terminal_bus, v-f')
 
     # ── Line parameter overrides ──────────────────────────────────────
     if sens_lines_df is not None and not sens_lines_df.empty:
         lt_rows = sens_lines_df[sens_lines_df['Timestep'] == timestep]
+        if verbose:
+            print(f'  Line overrides for timestep {timestep}: {len(lt_rows)} row(s)')
         for _, row in lt_rows.iterrows():
             port_str = str(row['Port']).strip()
             parts = port_str.split(',')
             p1, p2 = int(parts[0].strip()), int(parts[1].strip())
             key = (p1, p2)
+            applied = False
             for lines_dict in (data['ac_lines'], data['dc_lines']):
                 if key in lines_dict:
+                    applied = True
                     if pd.notna(row.get('R')):
                         lines_dict[key]['R'] = float(row['R'])
                     if pd.notna(row.get('X')):
                         lines_dict[key]['X'] = float(row['X'])
                     if pd.notna(row.get('Smax')):
                         lines_dict[key]['Smax'] = float(row['Smax'])
+                    if verbose:
+                        vals = {c: row.get(c) for c in ('R', 'X', 'Smax') if pd.notna(row.get(c))}
+                        print(f'    Line {key}: {vals}  [OK]')
+            if not applied:
+                print(f'  [sensitivity WARNING] Line {key}: not found in ac_lines or dc_lines')
 
     return data
 
@@ -174,7 +268,38 @@ def run_sensitivity(base_input_file: str,
         sens_lines_df = pd.read_excel(sens_xls, sheet_name='Lines')
         sens_lines_df.columns = [c.strip() for c in sens_lines_df.columns]
 
-    timesteps = sorted(sens_ports_df['Timestep'].unique())
+    ts_set = set(sens_ports_df['Timestep'].unique())
+    if sens_lines_df is not None and 'Timestep' in sens_lines_df.columns:
+        ts_set |= set(sens_lines_df['Timestep'].unique())
+    timesteps = sorted(ts_set)
+
+    # Validate sensitivity input against base topology and collect warnings
+    warnings = []
+    valid_port_types = {'slack,ext_grid', 'slack', 'v-f', 'pq', 'terminal', 'terminal_bus'}
+    base_port_types = base_data.get('port_types', {})
+    for _, row in sens_ports_df.iterrows():
+        port_id = int(row['Port'])
+        ptype = str(row['Type']).strip().lower()
+        ts = row['Timestep']
+        if ptype not in valid_port_types:
+            warnings.append(f'  Ports sheet, Timestep={ts}, Port={port_id}: '
+                            f'unrecognised Type "{row["Type"]}". '
+                            f'Expected one of: {", ".join(sorted(valid_port_types))}')
+        elif port_id in base_port_types:
+            base_type = base_port_types[port_id]
+            # Normalise for comparison: 'slack,ext_grid' contains 'slack'
+            if ptype != base_type and ptype not in base_type:
+                warnings.append(f'  Ports sheet, Timestep={ts}, Port={port_id}: '
+                                f'Type "{ptype}" does not match base topology '
+                                f'Type "{base_type}"')
+    if sens_lines_df is not None:
+        ac_dc_keys = set(base_data['ac_lines'].keys()) | set(base_data['dc_lines'].keys())
+        for _, row in sens_lines_df.iterrows():
+            parts = str(row['Port']).split(',')
+            key = (int(parts[0].strip()), int(parts[1].strip()))
+            if key not in ac_dc_keys:
+                warnings.append(f'  Lines sheet, Timestep={row["Timestep"]}, '
+                                f'Line={key}: not found in AC or DC lines')
 
     # 3. Read template to discover expected port and line indices
     tpl = pd.ExcelFile(output_file)
@@ -214,7 +339,8 @@ def run_sensitivity(base_input_file: str,
             print(f'{"=" * 60}')
 
         input_data = _apply_timestep_overrides(base_data, sens_ports_df,
-                                               sens_lines_df, t)
+                                               sens_lines_df, t,
+                                               verbose=verbose)
 
         model = AbstractModel()
         model = define_sets(model, input_data)
@@ -353,6 +479,10 @@ def run_sensitivity(base_input_file: str,
         print(f'Sensitivity analysis complete — {len(timesteps)} timesteps')
         print(f'Results saved to: {output_file}')
         print(f'Total time: {elapsed:.1f} s')
+        if warnings:
+            print(f'\n⚠  {len(warnings)} warning(s) in sensitivity input:')
+            for w in warnings:
+                print(w)
         print(f'{"=" * 60}')
 
     return output_file

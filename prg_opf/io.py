@@ -148,6 +148,7 @@ def load_input_excel(filepath):
     terminal_ports_bus = []
     terminal_port_bus_p = {}
     terminal_port_bus_q = {}
+    has_bus_type = 'Type' in bus_df.columns
     for _, r in bus_df.iterrows():
         if _has_value(r.get('P_setpoint')):
             bus_id = r['Bus']
@@ -155,6 +156,20 @@ def load_input_excel(filepath):
             terminal_ports_bus.append((bus_id, port_id))
             terminal_port_bus_p[(bus_id, port_id)] = float(r['P_setpoint'])
             terminal_port_bus_q[(bus_id, port_id)] = float(r.get('Q_setpoint', 0)) if pd.notna(r.get('Q_setpoint')) else 0.0
+
+    # Build port_types: port_id → canonical type string
+    # Valid types: slack,ext_grid | slack | v-f | pq | terminal | terminal_bus
+    port_types = {}
+    for _, r in pr_df.iterrows():
+        port_id = int(r['Port'])
+        raw = r['Type'].strip().lower()
+        port_types[port_id] = raw
+    for _, r in bus_df.iterrows():
+        port_id = int(r['Port'])
+        if has_bus_type and _has_value(r.get('Type')):
+            port_types[port_id] = str(r['Type']).strip().lower()
+        else:
+            port_types[port_id] = 'terminal_bus'
 
     # AC Lines
     ac_lines = {}
@@ -190,6 +205,7 @@ def load_input_excel(filepath):
         'terminal_port_bus_q': terminal_port_bus_q,
         'pq_port_p_setpoints': pq_port_p_setpoints,
         'pq_port_q_setpoints': pq_port_q_setpoints,
+        'port_types': port_types,
         'ac_lines': ac_lines,
         'dc_lines': dc_lines,
         'params': params,

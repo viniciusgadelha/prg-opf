@@ -10,8 +10,14 @@ from pyomo.environ import Constraint, ConstraintList, Objective, minimize
 
 # ── Port loss constraints (Big-M decomposition) ─────────────────────────
 
-def add_port_loss_constraints(model):
-    """P = P_POS - P_NEG decomposition with linearized converter losses."""
+def add_port_loss_constraints(model, enable_constraints):
+    """P = P_POS - P_NEG decomposition with linearized converter losses.
+
+    Ports with P_setpoint == 0 (in ZERO_P_PORT) bypass the Big-M c0 terms
+    entirely: their loss variables are fixed to zero, avoiding the infeasibility
+    caused by the negative intercept c0 < 0 when power flow is zero.
+    """
+    has_zero_p = enable_constraints.get('zero_p_ports', False)
 
     def port_loss_rule1(model, pr, port):
         return model.P[port] == model.P_POS[port] - model.P_NEG[port]
@@ -26,16 +32,38 @@ def add_port_loss_constraints(model):
     model.port_loss_rule3 = Constraint(model.PR_PORT, rule=port_loss_rule3)
 
     def port_loss_rule4(model, pr, port):
-        return model.P_LOSS_POS[port] == model.y[port] * model.port_loss_c0[pr, port] + model.P_POS[port] * model.port_loss_c1[pr, port]
+        # Skip for zero-P ports: c0 < 0 would force P_LOSS_POS below zero
+        if has_zero_p and port in model.ZERO_P_PORT:
+            return Constraint.Skip
+        return (model.P_LOSS_POS[port]
+                == model.y[port] * model.port_loss_c0[pr, port]
+                + model.P_POS[port] * model.port_loss_c1[pr, port])
     model.port_loss_rule4 = Constraint(model.PR_PORT, rule=port_loss_rule4)
 
     def port_loss_rule5(model, pr, port):
-        return model.P_LOSS_NEG[port] == (1 - model.y[port]) * model.port_loss_c0[pr, port] + model.P_NEG[port] * model.port_loss_c1[pr, port]
+        # Skip for zero-P ports
+        if has_zero_p and port in model.ZERO_P_PORT:
+            return Constraint.Skip
+        return (model.P_LOSS_NEG[port]
+                == (1 - model.y[port]) * model.port_loss_c0[pr, port]
+                + model.P_NEG[port] * model.port_loss_c1[pr, port])
     model.port_loss_rule5 = Constraint(model.PR_PORT, rule=port_loss_rule5)
 
     def port_loss_rule6(model, pr, port):
         return model.P_LOSS[port] == model.P_LOSS_POS[port] + model.P_LOSS_NEG[port]
     model.port_loss_rule6 = Constraint(model.PR_PORT, rule=port_loss_rule6)
+
+    # For zero-P ports: pin loss components to zero
+    if has_zero_p:
+        def zero_p_loss_pos_rule(model, port):
+            return model.P_LOSS_POS[port] == 0
+        model.zero_p_loss_pos_rule = Constraint(model.ZERO_P_PORT,
+                                                rule=zero_p_loss_pos_rule)
+
+        def zero_p_loss_neg_rule(model, port):
+            return model.P_LOSS_NEG[port] == 0
+        model.zero_p_loss_neg_rule = Constraint(model.ZERO_P_PORT,
+                                                rule=zero_p_loss_neg_rule)
 
 
 # ── Power flow & voltage constraints (AC lines) ─────────────────────────
@@ -261,7 +289,7 @@ def build_formulation(model, enable_constraints, input_data):
     """
     q_exempt = _compute_q_exempt(input_data)
 
-    add_port_loss_constraints(model)
+    add_port_loss_constraints(model, enable_constraints)
     add_power_flow_constraints(model)
     add_terminal_constraints(model, enable_constraints)
     add_pq_setpoint_constraints(model, enable_constraints)

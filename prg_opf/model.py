@@ -115,12 +115,21 @@ def define_parameters(model, input_data):
     model.port_loss_c0 = Param(model.PR_PORT, initialize=input_data['port_loss_c0'])
     model.port_loss_c1 = Param(model.PR_PORT, initialize=input_data['port_loss_c1'])
 
+    # Ports with a forced P = 0 setpoint: the Big-M loss model is bypassed for
+    # these ports (c0 < 0 would make P_LOSS_POS or P_LOSS_NEG go negative).
+    zero_p_ports = [port for (_, port), val
+                    in input_data['pq_port_p_setpoints'].items() if val == 0.0]
+    has_zero_p_ports = bool(zero_p_ports)
+    if has_zero_p_ports:
+        model.ZERO_P_PORT = Set(within=model.PORT, initialize=zero_p_ports)
+
     enable_constraints = {
         'terminal_pr': has_terminal_pr,
         'terminal_bus': has_terminal_bus,
         'dc_lines': has_dc,
         'pq_p_set': has_pq_p_set,
         'pq_q_set': has_pq_q_set,
+        'zero_p_ports': has_zero_p_ports,
     }
     return model, enable_constraints
 

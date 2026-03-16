@@ -1261,20 +1261,30 @@ def _draw_ports(fig: go.Figure, pos: dict, data: dict,
         "Bus Port":         {"color": C["port_bus"],        "ports": [], "sz": PORT_R, "txtcol": C["text"], "symbol": "circle"},
     }
 
-    # Build port_id → P_setpoint map from input data (PR terminal ports + bus terminal ports)
+    # p_set_map: used for hover text display — includes all port types with setpoints
     p_set_map = {}
     for (_, port_id), pval in data.get("terminal_port_p", {}).items():
         p_set_map[port_id] = pval
     for (_, port_id), pval in data.get("terminal_port_bus_p", {}).items():
         p_set_map[port_id] = pval
+    for (_, port_id), pval in data.get("pq_port_p_setpoints", {}).items():
+        p_set_map[port_id] = pval
+
+    # terminal_p_set_map: used for Generation/Load colour classification only
+    # (terminal and terminal_bus ports only — PQ ports stay green regardless)
+    terminal_p_set_map = {}
+    for (_, port_id), pval in data.get("terminal_port_p", {}).items():
+        terminal_p_set_map[port_id] = pval
+    for (_, port_id), pval in data.get("terminal_port_bus_p", {}).items():
+        terminal_p_set_map[port_id] = pval
 
     for port in sets["PORT"]:
         pk = f"P{port}"
         if pk not in pos:
             continue
-        p_set = p_set_map.get(port)
-        if p_set is not None and p_set != 0:
-            if p_set < 0:
+        t_set = terminal_p_set_map.get(port)
+        if t_set is not None and t_set != 0:
+            if t_set < 0:
                 groups["Generation Port"]["ports"].append(port)
             else:
                 groups["Load Port"]["ports"].append(port)
@@ -1536,6 +1546,7 @@ def plot_sensitivity_interactive(
 
     # Load per-timestep line parameter overrides from sens_input_file
     sens_lines_by_ts: dict = {}
+    sens_ports_by_ts: dict = {}
     if sens_input_file and os.path.exists(sens_input_file):
         try:
             _xls_in = pd.ExcelFile(sens_input_file)
@@ -1550,20 +1561,69 @@ def plot_sensitivity_interactive(
                            if pd.notna(_row.get(c))}
                     if _ov:
                         sens_lines_by_ts.setdefault(_ts, {})[_lkey] = _ov
+            if 'Ports' in _xls_in.sheet_names:
+                _pdf_in = pd.read_excel(_xls_in, sheet_name='Ports')
+                _pdf_in.columns = [c.strip() for c in _pdf_in.columns]
+                for _, _row in _pdf_in.iterrows():
+                    _ts = _row['Timestep']
+                    _pid = int(_row['Port'])
+                    _pov = {}
+                    for c in ('P_setpoint', 'Q_setpoint', 'V_setpoint'):
+                        if pd.notna(_row.get(c)):
+                            _pov[c] = float(_row[c])
+                    _ptype = str(_row.get('Type', '')).strip().lower()
+                    if _pov:
+                        _pov['_type'] = _ptype
+                        sens_ports_by_ts.setdefault(_ts, {})[_pid] = _pov
         except Exception:
             pass
 
-    def _apply_line_overrides(base_data: dict, t) -> dict:
-        """Return a data dict with line parameters overridden for timestep t."""
-        if t not in sens_lines_by_ts:
+    def _apply_sens_overrides(base_data: dict, t) -> dict:
+        """Return a data dict with line + port overrides for timestep t."""
+        has_lines = t in sens_lines_by_ts
+        has_ports = t in sens_ports_by_ts
+        if not has_lines and not has_ports:
             return base_data
         data_t = {**base_data,
                   'ac_lines': {k: dict(v) for k, v in base_data['ac_lines'].items()},
-                  'dc_lines': {k: dict(v) for k, v in base_data['dc_lines'].items()}}
-        for lkey, ov in sens_lines_by_ts[t].items():
-            for ld in (data_t['ac_lines'], data_t['dc_lines']):
-                if lkey in ld:
-                    ld[lkey].update(ov)
+                  'dc_lines': {k: dict(v) for k, v in base_data['dc_lines'].items()},
+                  'pq_port_p_setpoints': dict(base_data.get('pq_port_p_setpoints', {})),
+                  'pq_port_q_setpoints': dict(base_data.get('pq_port_q_setpoints', {})),
+                  'terminal_port_p': dict(base_data.get('terminal_port_p', {})),
+                  'terminal_port_bus_p': dict(base_data.get('terminal_port_bus_p', {}))}
+        if has_lines:
+            for lkey, ov in sens_lines_by_ts[t].items():
+                for ld in (data_t['ac_lines'], data_t['dc_lines']):
+                    if lkey in ld:
+                        ld[lkey].update(ov)
+        if has_ports:
+            for pid, pov in sens_ports_by_ts[t].items():
+                ptype = pov.get('_type', '')
+                p_val = pov.get('P_setpoint')
+                if p_val is not None:
+                    if ptype == 'pq':
+                        # Update or add PQ setpoint
+                        found = False
+                        for k in list(data_t['pq_port_p_setpoints']):
+                            if k[1] == pid:
+                                data_t['pq_port_p_setpoints'][k] = p_val
+                                found = True
+                                break
+                        if not found:
+                            for pr, p in base_data['sets']['PR_PORT']:
+                                if int(p) == pid:
+                                    data_t['pq_port_p_setpoints'][(pr, pid)] = p_val
+                                    break
+                    elif ptype == 'terminal':
+                        for k in list(data_t['terminal_port_p']):
+                            if k[1] == pid:
+                                data_t['terminal_port_p'][k] = p_val
+                                break
+                    elif ptype == 'terminal_bus':
+                        for k in list(data_t['terminal_port_bus_p']):
+                            if k[1] == pid:
+                                data_t['terminal_port_bus_p'][k] = p_val
+                                break
         return data_t
 
     # Pre-load all result sheets once (avoids re-reading the file per timestep)
@@ -1585,7 +1645,7 @@ def plot_sensitivity_interactive(
 
     all_results = [_load_sens_results_for_timestep(cache, t) for t in timesteps]
     results_0 = all_results[0] or {}
-    data_0 = _apply_line_overrides(data, timesteps[0])
+    data_0 = _apply_sens_overrides(data, timesteps[0])
 
     # ── Base figure (T=0) ─────────────────────────────────────────────
     fig = go.Figure()
@@ -1615,7 +1675,7 @@ def plot_sensitivity_interactive(
     frames = []
     for t, results_t in zip(timesteps, all_results):
         rt = results_t or {}
-        data_t = _apply_line_overrides(data, t)
+        data_t = _apply_sens_overrides(data, t)
         temp = go.Figure()
         _draw_busbars(temp, pos, data_t, bus_angles)
         if bus_angles:
