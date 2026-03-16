@@ -122,11 +122,31 @@ def export_results(solution, input_data=None, path=None, label=''):
     )
     relaxation_df = _pyomo_var_to_df(solution.current_power_relation, 'relaxation')
 
-    for df in [current_df, dc_current_df, relaxation_df]:
+    # --- Line losses ---
+    # AC: P_loss = R * |A|  (A = I², linearized DistFlow; abs guards against numerical noise)
+    ac_loss_rows = [
+        (str((p1, p2)), abs(value(solution.A[p1, p2])) * value(solution.line_R[p1, p2]) * 1000)
+        for (p1, p2) in solution.A
+    ]
+    ac_line_loss_df = pd.DataFrame(ac_loss_rows, columns=['index', 'P_LOSS_LINE [kW]'])
+
+    # DC: P_loss = R * |A_DC|²  (A_DC = current)
+    if has_dc:
+        dc_loss_rows = [
+            (str((p1, p2)), value(solution.dc_line_R[p1, p2]) * abs(value(solution.A_DC[p1, p2])) ** 2 * 1000)
+            for (p1, p2) in solution.A_DC
+        ]
+        dc_line_loss_df = pd.DataFrame(dc_loss_rows, columns=['index', 'P_LOSS_LINE [kW]'])
+    else:
+        dc_line_loss_df = pd.DataFrame(columns=['index', 'P_LOSS_LINE [kW]'])
+
+    all_line_loss_df = pd.concat([ac_line_loss_df, dc_line_loss_df], ignore_index=True)
+
+    for df in [current_df, dc_current_df, relaxation_df, all_line_loss_df]:
         df['index'] = df['index'].astype(str)
 
     lines_df = current_df
-    for df in [dc_current_df, relaxation_df]:
+    for df in [dc_current_df, relaxation_df, all_line_loss_df]:
         lines_df = lines_df.merge(df, on='index', how='outer')
 
     # Write Excel

@@ -174,21 +174,137 @@ def _load_results(results_file: str) -> dict | None:
                         results[key][int(row["index"])] = float(row[col])
                     except (ValueError, TypeError):
                         pass
+        # Extract objective value (total losses)
+        obj_row = ndf[ndf["index"].astype(str) == "Objective"]
+        if not obj_row.empty and "P [MW]" in ndf.columns:
+            try:
+                results["objective"] = float(obj_row.iloc[0]["P [MW]"])
+            except (ValueError, TypeError):
+                pass
     except Exception:
         pass
-    # Read lines sheet (I)
+    # Read lines sheet (I, line losses)
     try:
         ldf = pd.read_excel(results_file, sheet_name="lines")
-        if "I [kA]" in ldf.columns:
-            results["I"] = {}
+        def _parse_line_col(ldf, col, key):
+            if col not in ldf.columns:
+                return
+            results[key] = {}
             for _, row in ldf.iterrows():
                 idx = row["index"]
                 if isinstance(idx, str) and "," in idx:
                     parts = idx.strip("()").split(",")
-                    results["I"][(int(parts[0].strip()),
-                                  int(parts[1].strip()))] = float(row["I [kA]"])
+                    try:
+                        results[key][(int(parts[0].strip()),
+                                      int(parts[1].strip()))] = float(row[col])
+                    except (ValueError, TypeError):
+                        pass
+        _parse_line_col(ldf, "I [kA]", "I")
+        _parse_line_col(ldf, "I_DC [kA]", "I_DC")
+        if "P_LOSS_LINE [kW]" in ldf.columns:
+            results["line_loss"] = {}
+            for _, row in ldf.iterrows():
+                idx = row["index"]
+                if isinstance(idx, str) and "," in idx:
+                    parts = idx.strip("()").split(",")
+                    try:
+                        results["line_loss"][(int(parts[0].strip()),
+                                              int(parts[1].strip()))] = float(row["P_LOSS_LINE [kW]"])
+                    except (ValueError, TypeError):
+                        pass
     except Exception:
         pass
+    # Pre-compute total port loss for annotation
+    if "P_LOSS" in results:
+        try:
+            results["port_loss_kw"] = sum(abs(v) for v in results["P_LOSS"].values()) * 1000
+        except Exception:
+            pass
+    return results if results else None
+
+
+def _make_losses_annotation(results: dict) -> dict:
+    """Return kwargs for fig.add_annotation() — losses summary box."""
+    obj_kw = results.get("objective", 0.0) * 1000
+    port_kw = results.get("port_loss_kw", 0.0)
+    ac_kw = results.get("ac_line_loss_kw", 0.0)
+    dc_kw = results.get("dc_line_loss_kw", 0.0)
+
+    def _pct(x: float) -> str:
+        return f"{x / obj_kw * 100:.1f}% of total" if obj_kw > 1e-9 else "N/A"
+
+    text = (
+        f"<b>Total Losses: {obj_kw:.2f} kW</b>"
+        f"<br>Port Losses:   {port_kw:.2f} kW  ({_pct(port_kw)})"
+        f"<br>AC Lines:      {ac_kw:.2f} kW  ({_pct(ac_kw)})"
+        f"<br>DC Lines:      {dc_kw:.2f} kW  ({_pct(dc_kw)})"
+    )
+    return dict(
+        text=text,
+        xref="paper", yref="paper",
+        x=0.99, y=0.01,
+        xanchor="right", yanchor="bottom",
+        showarrow=False,
+        font=dict(size=12, color=C["text"], family=FONT_FAMILY),
+        bgcolor=C["legend_bg"],
+        bordercolor="rgb(180,180,180)", borderwidth=1,
+        borderpad=6,
+        align="left",
+    )
+
+
+def _load_sens_results_for_timestep(cache: dict, timestep) -> dict | None:
+    """
+    Extract a results dict (same structure as _load_results) for one *timestep*
+    from a pre-loaded sheet cache  {sheet_name: DataFrame}.
+    """
+    results: dict = {}
+    tc = str(int(timestep))
+
+    # Per-port results
+    for sheet, key, div in [
+        ("V (kV)",      "V",      1.0),
+        ("P (MW)",      "P",      1.0),
+        ("Q (MVAR)",    "Q",      1.0),
+        ("P_LOSS (kW)", "P_LOSS", 1000.0),  # stored kW → results wants MW
+    ]:
+        df = cache.get(sheet)
+        if df is None or tc not in df.columns:
+            continue
+        results[key] = {}
+        for _, row in df.iterrows():
+            try:
+                results[key][int(row["Port/Timestep"])] = float(row[tc]) / div
+            except (ValueError, TypeError):
+                pass
+
+    # Per-line losses
+    ldf = cache.get("L_LOSS (kW)")
+    if ldf is not None and tc in ldf.columns:
+        results["line_loss"] = {}
+        for _, row in ldf.iterrows():
+            parts = str(row["Port/Timestep"]).split(",")
+            try:
+                results["line_loss"][(int(parts[0].strip()),
+                                      int(parts[1].strip()))] = float(row[tc])
+            except (ValueError, TypeError):
+                pass
+
+    # Aggregate loss breakdown from Summary sheet
+    sdf = cache.get("Summary")
+    if sdf is not None:
+        t_row = sdf[sdf["Timestep"] == timestep]
+        if not t_row.empty:
+            r0 = t_row.iloc[0]
+            for col, key in [("Objective (MW)",     "objective"),
+                             ("AC Line Loss (kW)",  "ac_line_loss_kw"),
+                             ("DC Line Loss (kW)",  "dc_line_loss_kw"),
+                             ("Port Loss (kW)",     "port_loss_kw")]:
+                try:
+                    results[key] = float(r0[col])
+                except (KeyError, ValueError, TypeError):
+                    pass
+
     return results if results else None
 
 
@@ -1083,20 +1199,39 @@ def _draw_lines(fig: go.Figure, pos: dict, data: dict,
                  f"<br>R={vals['R']:.6f}, X={vals['X']:.6f}"
                  f"<br>Smax={vals['Smax']:.2f}")
         if results:
-            iv = results.get("I", {}).get((p1, p2))
-            if iv is not None:
-                hover += f"<br>I = {iv:.4f} kA"
+            if lt == "dc":
+                iv = results.get("I_DC", {}).get((p1, p2))
+                if iv is not None:
+                    hover += f"<br>I_DC = {iv:.4f} kA"
+            else:
+                iv = results.get("I", {}).get((p1, p2))
+                if iv is not None:
+                    hover += f"<br>I = {iv:.4f} kA"
             pv = results.get("P", {}).get(p1)
             if pv is not None:
                 hover += f"<br>P_send = {pv:.4f} MW"
+            lossv = results.get("line_loss", {}).get((p1, p2))
+            if lossv is not None:
+                hover += f"<br>P_LOSS = {lossv:.2f} kW"
         legend_key = f"{ltype}_{lt}"
         show = not legend_added[legend_key]
         lname = f"{'Controllable' if ltype == 'controllable' else 'Slack'} Line ({'DC' if lt == 'dc' else 'AC'})"
         fig.add_trace(go.Scatter(
             x=xs + [None], y=ys + [None], mode="lines",
             line=dict(color=colour, width=2, dash=dash),
-            hovertext=hover, hoverinfo="text",
+            hoverinfo="skip",
             name=lname, showlegend=show, legendgroup=lname,
+        ))
+        # Invisible marker at the path midpoint carries the hover text
+        n = len(xs)
+        mi = n // 2
+        mid_x = (xs[mi - 1] + xs[mi]) / 2
+        mid_y = (ys[mi - 1] + ys[mi]) / 2
+        fig.add_trace(go.Scatter(
+            x=[mid_x], y=[mid_y], mode="markers",
+            marker=dict(color=colour, size=10, opacity=0),
+            hovertext=hover, hoverinfo="text",
+            showlegend=False, legendgroup=lname,
         ))
         if show:
             legend_added[legend_key] = True
@@ -1326,6 +1461,16 @@ def plot_prg_interactive(
         else:
             _draw_flow_arrows(fig, pos, data, results, channels=channels)
 
+    # ── total losses annotation ────────────────────────────────────────
+    if results and "objective" in results:
+        # Compute AC/DC line loss split from topology keys
+        if "line_loss" in results and "ac_line_loss_kw" not in results:
+            results["ac_line_loss_kw"] = sum(
+                results["line_loss"].get(k, 0.0) for k in data["ac_lines"])
+            results["dc_line_loss_kw"] = sum(
+                results["line_loss"].get(k, 0.0) for k in data["dc_lines"])
+        fig.add_annotation(**_make_losses_annotation(results))
+
     # ── figure layout ─────────────────────────────────────────────────
     fig.update_layout(
         title=dict(
@@ -1367,6 +1512,190 @@ def plot_prg_interactive(
         else:
             fig.write_image(save_path, scale=2)
         print(f"Plot saved to {save_path}")
+
+    if show:
+        fig.show()
+
+    return fig
+
+
+def plot_sensitivity_interactive(
+    input_file: str,
+    sens_results_file: str,
+    sens_input_file: str | None = None,
+    save_path: str | None = None,
+    show: bool = True,
+    title: str | None = None,
+) -> go.Figure:
+    """
+    Topology plot with a timestep slider for sensitivity analysis results.
+    """
+    data = load_input_excel(input_file)
+    pos, bus_angles = _build_layout(data)
+    channels = None if bus_angles else _assign_routing_channels(pos, data)
+
+    # Load per-timestep line parameter overrides from sens_input_file
+    sens_lines_by_ts: dict = {}
+    if sens_input_file and os.path.exists(sens_input_file):
+        try:
+            _xls_in = pd.ExcelFile(sens_input_file)
+            if 'Lines' in _xls_in.sheet_names:
+                _ldf_in = pd.read_excel(_xls_in, sheet_name='Lines')
+                _ldf_in.columns = [c.strip() for c in _ldf_in.columns]
+                for _, _row in _ldf_in.iterrows():
+                    _ts = _row['Timestep']
+                    _parts = str(_row['Port']).split(',')
+                    _lkey = (int(_parts[0].strip()), int(_parts[1].strip()))
+                    _ov = {c: float(_row[c]) for c in ('R', 'X', 'Smax')
+                           if pd.notna(_row.get(c))}
+                    if _ov:
+                        sens_lines_by_ts.setdefault(_ts, {})[_lkey] = _ov
+        except Exception:
+            pass
+
+    def _apply_line_overrides(base_data: dict, t) -> dict:
+        """Return a data dict with line parameters overridden for timestep t."""
+        if t not in sens_lines_by_ts:
+            return base_data
+        data_t = {**base_data,
+                  'ac_lines': {k: dict(v) for k, v in base_data['ac_lines'].items()},
+                  'dc_lines': {k: dict(v) for k, v in base_data['dc_lines'].items()}}
+        for lkey, ov in sens_lines_by_ts[t].items():
+            for ld in (data_t['ac_lines'], data_t['dc_lines']):
+                if lkey in ld:
+                    ld[lkey].update(ov)
+        return data_t
+
+    # Pre-load all result sheets once (avoids re-reading the file per timestep)
+    try:
+        xls = pd.ExcelFile(sens_results_file)
+        cache = {s: pd.read_excel(xls, sheet_name=s) for s in xls.sheet_names}
+    except Exception:
+        cache = {}
+
+    try:
+        timesteps = cache["Summary"]["Timestep"].tolist()
+    except (KeyError, Exception):
+        timesteps = []
+
+    if not timesteps:
+        # Fallback: no summary data, show normal plot without slider
+        return plot_prg_interactive(input_file, save_path=save_path,
+                                    show=show, title=title)
+
+    all_results = [_load_sens_results_for_timestep(cache, t) for t in timesteps]
+    results_0 = all_results[0] or {}
+    data_0 = _apply_line_overrides(data, timesteps[0])
+
+    # ── Base figure (T=0) ─────────────────────────────────────────────
+    fig = go.Figure()
+    _draw_pr_boxes(fig, pos, data_0)
+    _draw_busbars(fig, pos, data_0, bus_angles)
+    if bus_angles:
+        _draw_lines(fig, pos, data_0, results_0, straight=True)
+        _draw_ports(fig, pos, data_0, results_0)
+        _draw_flow_arrows(fig, pos, data_0, results_0, straight=True)
+    else:
+        _draw_lines(fig, pos, data_0, results_0, channels=channels)
+        _draw_ports(fig, pos, data_0, results_0)
+        _draw_flow_arrows(fig, pos, data_0, results_0, channels=channels)
+
+    # Freeze annotations generated so far (PR labels, bus names, T=0 flow arrows)
+    static_annotations = list(fig.layout.annotations)
+
+    # Add T=0 losses annotation to base figure
+    if "ac_line_loss_kw" not in results_0 and "line_loss" in results_0:
+        results_0["ac_line_loss_kw"] = sum(
+            results_0["line_loss"].get(k, 0.0) for k in data_0["ac_lines"])
+        results_0["dc_line_loss_kw"] = sum(
+            results_0["line_loss"].get(k, 0.0) for k in data_0["dc_lines"])
+    fig.add_annotation(**_make_losses_annotation(results_0))
+
+    # ── Frames (one per timestep) ──────────────────────────────────────────────
+    frames = []
+    for t, results_t in zip(timesteps, all_results):
+        rt = results_t or {}
+        data_t = _apply_line_overrides(data, t)
+        temp = go.Figure()
+        _draw_busbars(temp, pos, data_t, bus_angles)
+        if bus_angles:
+            _draw_lines(temp, pos, data_t, rt, straight=True)
+        else:
+            _draw_lines(temp, pos, data_t, rt, channels=channels)
+        _draw_ports(temp, pos, data_t, rt)
+        frames.append(go.Frame(
+            data=list(temp.data),
+            layout=go.Layout(annotations=[*static_annotations,
+                                           _make_losses_annotation(rt)]),
+            name=str(int(t)),
+        ))
+
+    fig.frames = frames
+
+    # ── Slider ────────────────────────────────────────────────────────
+    slider_steps = [
+        dict(
+            args=[[str(int(t))],
+                  {"frame": {"duration": 0, "redraw": True},
+                   "mode": "immediate",
+                   "transition": {"duration": 0}}],
+            label=f"T={int(t)}",
+            method="animate",
+        )
+        for t in timesteps
+    ]
+
+    # ── Layout ────────────────────────────────────────────────────────
+    fig.update_layout(
+        title=dict(
+            text=title or "Power Router Grid  –  Sensitivity Analysis",
+            font=dict(size=18, color=C["text"], family=FONT_FAMILY),
+            x=0.42,
+        ),
+        plot_bgcolor=C["bg"],
+        paper_bgcolor=C["paper"],
+        showlegend=True,
+        legend=dict(
+            x=1.005, y=1, xanchor="left", yanchor="top",
+            bgcolor=C["legend_bg"],
+            bordercolor="rgb(180,180,180)", borderwidth=1,
+            font=dict(size=11, family=FONT_FAMILY, color=C["text"]),
+            itemsizing="constant",
+            title=dict(text="<b>Legend</b>",
+                       font=dict(size=13, family=FONT_FAMILY)),
+            tracegroupgap=4,
+        ),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
+                   scaleanchor="y", scaleratio=1),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        hovermode="closest",
+        margin=dict(l=15, r=15, t=55, b=90),
+        width=1600, height=760,
+        sliders=[dict(
+            active=0,
+            steps=slider_steps,
+            x=0.05, y=-0.02,
+            xanchor="left", yanchor="top",
+            len=0.9,
+            currentvalue=dict(
+                prefix="Timestep: ",
+                visible=True,
+                xanchor="center",
+                font=dict(size=13, family=FONT_FAMILY, color=C["text"]),
+            ),
+            transition=dict(duration=0),
+            pad=dict(b=10, t=10),
+        )],
+    )
+
+    # ── Save / show ───────────────────────────────────────────────────
+    if save_path:
+        if save_path.endswith(".html"):
+            with open(save_path, "w", encoding="utf-8") as fh:
+                fh.write(fig.to_html())
+        else:
+            fig.write_image(save_path, scale=2)
+        print(f"Sensitivity plot saved to {save_path}")
 
     if show:
         fig.show()

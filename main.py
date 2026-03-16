@@ -47,10 +47,45 @@ def main():
         '--no-plot', action='store_false', dest='plot',
         help='Skip interactive topology plot',
     )
+    parser.add_argument(
+        '--sensitivity', action='store_true', default=False,
+        help='Run sensitivity analysis mode (reads --sens-input, writes --sens-output)',
+    )
+    parser.add_argument(
+        '--sens-input', default='data/sens_input.xlsx',
+        help='Path to sensitivity input file (default: data/sens_input.xlsx)',
+    )
+    parser.add_argument(
+        '--sens-output', default='results/sens_results_.xlsx',
+        help='Path to sensitivity results file (default: results/sens_results_.xlsx)',
+    )
     args = parser.parse_args()
 
     start_time = time.time()
 
+    # ── Sensitivity analysis mode ──────────────────────────────────────
+    if args.sensitivity:
+        from prg_opf.sensitivity import run_sensitivity
+        run_sensitivity(
+            base_input_file=args.input,
+            sens_input_file=args.sens_input,
+            output_file=args.sens_output,
+            solver=args.solver,
+            time_limit=args.time_limit,
+        )
+        elapsed = time.time() - start_time
+        print(f'\n--- Total time elapsed: {elapsed:.2f} seconds ---')
+        if args.plot:
+            from prg_opf.plotting import plot_sensitivity_interactive
+            plot_sensitivity_interactive(
+                args.input,
+                sens_results_file=args.sens_output,
+                sens_input_file=args.sens_input,
+                save_path='results/prg_sensitivity_interactive.html',
+            )
+        return
+
+    # ── Single-run mode ────────────────────────────────────────────────
     # 1. Load input data
     input_data = load_input_excel(args.input)
 
