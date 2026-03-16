@@ -12,8 +12,7 @@ deterministic grid layout so that:
   * PRs are placed on a horizontal centre line with generous spacing.
   * AC buses form one ring (above), DC buses form another ring (below).
   * Lines are routed orthogonally (Manhattan style).
-  * Ext-grid symbols, load arrows, and port circles are placed around
-    the edges of each PR / bus.
+    * Load arrows and port circles are placed around the edges of each PR / bus.
 
 Colour conventions
 ------------------
@@ -23,7 +22,7 @@ DC (10 kV) : #40A9F1 solid lines, #40A9F1 busbars
 Port types
 ----------
   Slack           -> red    filled circle
-  Ext Grid        -> red    filled circle  (+ crosshatched square nearby)
+    Ext Grid        -> red    hexagram
   Voltage control -> blue   filled circle
   PQ (power)      -> green  filled circle
   Terminal        -> purple filled circle
@@ -49,7 +48,6 @@ import math
 import os
 from collections import defaultdict
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -62,7 +60,6 @@ FONT_FAMILY = "Times New Roman, serif"
 
 C = {
     "bg":            "#F0F0F0",
-    "grid":          "#DCDCDC",
     "paper":         "#FFFFFF",
     # PR boxes
     "pr_fill":       "white",
@@ -70,9 +67,11 @@ C = {
     # Busbars
     "bus_ac":        "black",
     "bus_dc":        "#40A9F1",
-    # Lines
-    "ac_line":       "black",
-    "dc_line":       "#40A9F1",
+    # Transmission lines
+    "line_ac":       "black",
+    "line_dc":       "#40A  9F1",
+    "line_controllable_dash": "solid",
+    "line_slack_dash": "dot",
     # Port fills
     "port_slack":    "#D42B17",
     "port_extgrid":  "#D42B17",
@@ -85,18 +84,8 @@ C = {
     "port_load":       "#96789e",
     # Port outline (always black)
     "port_outline":  "black",
-    # Flow arrows
-    "arrow_ac":      "#D42B17",
-    "arrow_dc":      "#2B6BD4",
     # Text
     "text":          "black",
-    "text_light":    "#555555",
-    # Ext-grid cross-hatch box
-    "extgrid_fill":  "rgba(230,230,230,0.6)",
-    "extgrid_line":  "black",
-    # Load arrows
-    "load_ac":       "black",
-    "load_dc":       "#40A9F1",
     # Legend panel bg
     "legend_bg":     "rgba(255,255,255,0.95)",
 }
@@ -106,9 +95,7 @@ PR_W = 0.8     # full width  of a PR box  (scaled down 50%)
 PR_H = 0.6     # full height of a PR box  (scaled down 50%)
 BUS_W = 0.55   # full width  of a bus box (slightly smaller than PR)
 BUS_H = 0.40   # full height of a bus box
-BUS_LEN = BUS_W / 2  # half-width used for port placement at edges
 PORT_R = 19    # marker size for all ports (uniform)
-EXTGRID_SZ = 0.32  # half-side of ext-grid crosshatch square
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -216,26 +203,14 @@ def _build_line_types(data: dict) -> dict:
       endpoint.  Bus-to-bus chains are traversed completely.
     - For each edge (p1, p2) the two terminal PR ports are found by BFS from
       each side, passing only through bus ports, until a PR port is reached.
-    - A terminal PR port is 'controllable' when its PR has at least one PQ
-      port (all ports of a PR are internally connected, so a PQ port anywhere
-      on the PR makes every line on that PR controllable).
+    - A terminal PR port is 'controllable' only when that endpoint port is PQ.
     - If either terminal is controllable → whole path is controllable.
     - Otherwise → slack.
     """
     sets = data["sets"]
-    pq_port_ids  = set(p for _, p in sets["PQ_PORT"])
+    pq_port_ids = set(p for _, p in sets["PQ_PORT"])
     all_pr_ports = set(p for _, p in sets["PR_PORT"])
     all_bus_ports = set(p for _, p in sets["BUS_PORT"])
-
-    # PR-level: controllable if ANY port on that PR is PQ
-    port_to_pr: dict = {port: pr for pr, port in sets["PR_PORT"]}
-    pr_to_ports: dict = {}
-    for pr, port in sets["PR_PORT"]:
-        pr_to_ports.setdefault(pr, set()).add(port)
-    pr_is_ctrl: dict = {
-        pr: bool(ports & pq_port_ids)
-        for pr, ports in pr_to_ports.items()
-    }
 
     # Full adjacency graph (bidirectional) — lines + intra-bus connections
     all_lines = list(data["ac_lines"].keys()) + list(data["dc_lines"].keys())
@@ -274,10 +249,7 @@ def _build_line_types(data: dict) -> dict:
         return None  # isolated bus segment with no PR endpoint
 
     def endpoint_is_ctrl(ep):
-        if ep is None:
-            return False
-        pr = port_to_pr.get(ep)
-        return pr_is_ctrl.get(pr, False) if pr is not None else False
+        return ep in pq_port_ids if ep is not None else False
 
     line_types: dict = {}
     for (p1, p2) in all_lines:
@@ -551,17 +523,6 @@ def _build_layout_linear(data: dict) -> dict:
         _spread(down_ports,  cx, cy - hh, 1, 0)
         _spread(left_ports,  cx - hw, cy, 0, 1)
         _spread(right_ports, cx + hw, cy, 0, 1)
-
-        # Ext-grid symbols pushed further outward
-        for port in ports:
-            if _classify_port(port, data) == "ext_grid" and f"P{port}" in pos:
-                px, py = pos[f"P{port}"]
-                if abs(px - cx) > abs(py - cy):
-                    dx_sign = -1 if px < cx else 1
-                    pos[f"EXT_{port}"] = (px + dx_sign * 0.65, py)
-                else:
-                    dy_sign = -1 if py < cy else 1
-                    pos[f"EXT_{port}"] = (px, py + dy_sign * 0.65)
 
     # ── place bus ports (face-based, on box outline) ──────────────────
     for bus in sets["BUS"]:
@@ -890,16 +851,6 @@ def _build_layout_polygon(data: dict) -> tuple[dict, dict]:
         _spread(face_ports["left"],  cx - hw, cy, 0, 1)
         _spread(face_ports["right"], cx + hw, cy, 0, 1)
 
-        for port in ports:
-            if _classify_port(port, data) == "ext_grid" and f"P{port}" in pos:
-                px, py = pos[f"P{port}"]
-                if abs(px - cx) > abs(py - cy):
-                    dx_sign = -1 if px < cx else 1
-                    pos[f"EXT_{port}"] = (px + dx_sign * 0.65, py)
-                else:
-                    dy_sign = -1 if py < cy else 1
-                    pos[f"EXT_{port}"] = (px, py + dy_sign * 0.65)
-
     # ── place bus ports (face-based, on box outline) ──────────────
     for bus in sets["BUS"]:
         bk = f"BUS_{bus}"
@@ -1042,54 +993,6 @@ def _draw_pr_boxes(fig: go.Figure, pos: dict, data: dict):
         )
 
 
-def _draw_extgrid_symbols(fig: go.Figure, pos: dict, data: dict):
-    """Cross-hatched squares next to ext-grid ports."""
-    for _, port in data["sets"]["EXT_GRID"]:
-        ek = f"EXT_{port}"
-        if ek not in pos:
-            continue
-        ex, ey = pos[ek]
-        s = EXTGRID_SZ
-
-        fig.add_shape(
-            type="rect", x0=ex - s, y0=ey - s, x1=ex + s, y1=ey + s,
-            fillcolor=C["extgrid_fill"],
-            line=dict(color=C["extgrid_line"], width=1.5),
-            layer="above",
-        )
-        n_hatch = 4
-        for i in range(n_hatch):
-            t = (i + 0.5) / n_hatch
-            fig.add_shape(
-                type="line",
-                x0=ex - s + 2 * s * t, y0=ey - s,
-                x1=ex - s,              y1=ey - s + 2 * s * t,
-                line=dict(color=C["extgrid_line"], width=0.7),
-                layer="above",
-            )
-            fig.add_shape(
-                type="line",
-                x0=ex + s, y0=ey + s - 2 * s * t,
-                x1=ex + s - 2 * s * t, y1=ey + s,
-                line=dict(color=C["extgrid_line"], width=0.7),
-                layer="above",
-            )
-
-        fig.add_annotation(
-            x=ex, y=ey - s - 0.18,
-            text="<b>Ext Grid</b>",
-            showarrow=False,
-            font=dict(size=8, color=C["text"], family=FONT_FAMILY),
-        )
-        pk = f"P{port}"
-        if pk in pos:
-            px, py = pos[pk]
-            fig.add_shape(
-                type="line", x0=px, y0=py, x1=ex, y1=ey,
-                line=dict(color=C["extgrid_line"], width=1.5, dash="dot"),
-            )
-
-
 def _draw_busbars(fig: go.Figure, pos: dict, data: dict,
                   bus_angles: dict | None = None):
     """Rectangles for each bus, colour coded AC / DC. Angle-aware."""
@@ -1107,7 +1010,6 @@ def _draw_busbars(fig: go.Figure, pos: dict, data: dict,
             if p in bus_port_map:
                 bus_lt.setdefault(bus_port_map[p], lt)
 
-    ba = bus_angles or {}
     legend_added = {"ac": False, "dc": False}
 
     for bus in sets["BUS"]:
@@ -1213,15 +1115,15 @@ def _draw_ports(fig: go.Figure, pos: dict, data: dict,
     all_bus_ports = set(p for _, p in sets["BUS_PORT"])
 
     groups = {
-        "Slack Port":       {"color": C["port_slack"],      "ports": [], "sz": PORT_R, "txtcol": "white"},
-        "Ext Grid Port":    {"color": C["port_extgrid"],    "ports": [], "sz": PORT_R, "txtcol": "white"},
-        "Voltage Ctrl":     {"color": C["port_voltage"],    "ports": [], "sz": PORT_R, "txtcol": "white"},
-        "PQ Port":          {"color": C["port_pq"],         "ports": [], "sz": PORT_R, "txtcol": "white"},
-        "Generation Port":  {"color": C["port_generation"], "ports": [], "sz": PORT_R, "txtcol": "black"},
-        "Load Port":        {"color": C["port_load"],       "ports": [], "sz": PORT_R, "txtcol": "white"},
-        "Terminal Port":    {"color": C["port_terminal"],   "ports": [], "sz": PORT_R, "txtcol": "white"},
-        "Internal Port":    {"color": C["port_internal"],   "ports": [], "sz": PORT_R, "txtcol": "white"},
-        "Bus Port":         {"color": C["port_bus"],        "ports": [], "sz": PORT_R, "txtcol": C["text"]},
+        "Slack Port":       {"color": C["port_slack"],      "ports": [], "sz": PORT_R, "txtcol": "white", "symbol": "circle"},
+        "Ext Grid Port":    {"color": C["port_extgrid"],    "ports": [], "sz": PORT_R, "txtcol": "white", "symbol": "hexagram"},
+        "Voltage Ctrl":     {"color": C["port_voltage"],    "ports": [], "sz": PORT_R, "txtcol": "white", "symbol": "circle"},
+        "PQ Port":          {"color": C["port_pq"],         "ports": [], "sz": PORT_R, "txtcol": "white", "symbol": "circle"},
+        "Generation Port":  {"color": C["port_generation"], "ports": [], "sz": PORT_R, "txtcol": "black", "symbol": "circle"},
+        "Load Port":        {"color": C["port_load"],       "ports": [], "sz": PORT_R, "txtcol": "white", "symbol": "circle"},
+        "Terminal Port":    {"color": C["port_terminal"],   "ports": [], "sz": PORT_R, "txtcol": "white", "symbol": "circle"},
+        "Internal Port":    {"color": C["port_internal"],   "ports": [], "sz": PORT_R, "txtcol": "white", "symbol": "circle"},
+        "Bus Port":         {"color": C["port_bus"],        "ports": [], "sz": PORT_R, "txtcol": C["text"], "symbol": "circle"},
     }
 
     # Build port_id → P_setpoint map from input data (PR terminal ports + bus terminal ports)
@@ -1300,7 +1202,7 @@ def _draw_ports(fig: go.Figure, pos: dict, data: dict,
 
         fig.add_trace(go.Scatter(
             x=xs, y=ys, mode="markers+text",
-            marker=dict(symbol="circle", size=g["sz"],
+            marker=dict(symbol=g["symbol"], size=g["sz"],
                         color=g["color"],
                         line=dict(color=C["port_outline"], width=1.5)),
             text=texts,
@@ -1417,7 +1319,6 @@ def plot_prg_interactive(
     else:
         channels = _assign_routing_channels(pos, data)
         _draw_lines(fig, pos, data, results, channels=channels)
-    _draw_extgrid_symbols(fig, pos, data)
     _draw_ports(fig, pos, data, results)
     if results:
         if bus_angles:

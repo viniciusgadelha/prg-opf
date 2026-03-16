@@ -12,6 +12,36 @@ import pandas as pd
 from pyomo.environ import value
 
 
+def _get_dc_voltage_ports(input_data):
+    """
+    Return ports whose voltage variable is linear kV (DC-domain ports).
+
+    DC endpoints are identified from the DC Lines sheet and then expanded to
+    all ports that share the same busbar, because bus voltage constraints force
+    equal voltage across all ports of a bus.
+    """
+    if not input_data:
+        return set()
+
+    dc_voltage_ports = set()
+    for p1, p2 in input_data.get('dc_lines', {}).keys():
+        dc_voltage_ports.add(int(p1))
+        dc_voltage_ports.add(int(p2))
+
+    if not dc_voltage_ports:
+        return dc_voltage_ports
+
+    bus_to_ports = {}
+    for bus, port in input_data['sets'].get('BUS_PORT', []):
+        bus_to_ports.setdefault(bus, set()).add(int(port))
+
+    for ports in bus_to_ports.values():
+        if ports & dc_voltage_ports:
+            dc_voltage_ports.update(ports)
+
+    return dc_voltage_ports
+
+
 def _pyomo_var_to_df(var, col_name='solution'):
     """Convert a Pyomo indexed variable/constraint to a two-column DataFrame."""
     data = [(k, value(var[k])) for k in var]
@@ -50,22 +80,18 @@ def export_results(solution, input_data=None, path=None, label=''):
     objective = solution.obj()
     has_dc = hasattr(solution, 'A_DC')
 
-    # Identify DC ports (voltage in kV, not kV²)
-    dc_ports = set()
-    if has_dc:
-        for (p1, p2) in solution.DC_LINES:
-            dc_ports.add(p1)
-            dc_ports.add(p2)
+    # Identify ports whose voltage variable is already in kV (no sqrt needed)
+    dc_voltage_ports = _get_dc_voltage_ports(input_data)
 
     # --- Nodes sheet ---
     voltage_df = _pyomo_var_to_df(solution.V, 'V [kV]')
-    # Convert AC voltages from kV² to kV (skip DC ports)
+    # Convert AC voltages from kV² to kV (skip DC-domain ports)
     for i, row in voltage_df.iterrows():
         try:
             port_id = int(row['index'])
         except (ValueError, TypeError):
             continue
-        if port_id not in dc_ports:
+        if port_id not in dc_voltage_ports:
             voltage_df.at[i, 'V [kV]'] = math.sqrt(max(row['V [kV]'], 0))
 
     active_powers_df = _pyomo_var_to_df(solution.P, 'P [MW]')

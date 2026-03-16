@@ -218,7 +218,7 @@ def add_dc_constraints(model):
 # ── Objective function ───────────────────────────────────────────────────
 
 def add_objective(model, has_dc):
-    """Minimize total losses (AC line + converter + DC line)."""
+    """Minimize total losses (AC line + converter losses + DC line)."""
 
     if has_dc:
         def obj_rule(model):
