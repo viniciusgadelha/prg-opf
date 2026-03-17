@@ -12,6 +12,14 @@ import pandas as pd
 from pyomo.environ import value
 
 
+def _safe_value(obj, default=float('nan')):
+    """Like ``value()`` but returns *default* when the object is uninitialized."""
+    try:
+        return value(obj)
+    except (ValueError, TypeError):
+        return default
+
+
 def _get_dc_voltage_ports(input_data):
     """
     Return ports whose voltage variable is linear kV (DC-domain ports).
@@ -44,7 +52,7 @@ def _get_dc_voltage_ports(input_data):
 
 def _pyomo_var_to_df(var, col_name='solution'):
     """Convert a Pyomo indexed variable/constraint to a two-column DataFrame."""
-    data = [(k, value(var[k])) for k in var]
+    data = [(k, _safe_value(var[k])) for k in var]
     if data:
         return pd.DataFrame(data, columns=['index', col_name])
     return pd.DataFrame(columns=['index', col_name])
@@ -77,7 +85,11 @@ def export_results(solution, input_data=None, path=None, label=''):
     print('Saving and exporting results...')
     print('####################################################')
 
-    objective = solution.obj()
+    objective = _safe_value(solution.obj, default=None)
+    if objective is None:
+        print('\nWARNING: Objective value could not be evaluated — some '
+              'variables may be uninitialized (sub-optimal solve).')
+        objective = float('nan')
     has_dc = hasattr(solution, 'A_DC')
 
     # Identify ports whose voltage variable is already in kV (no sqrt needed)
@@ -124,18 +136,22 @@ def export_results(solution, input_data=None, path=None, label=''):
 
     # --- Line losses ---
     # AC: P_loss = R * |A|  (A = I², linearized DistFlow; abs guards against numerical noise)
-    ac_loss_rows = [
-        (str((p1, p2)), abs(value(solution.A[p1, p2])) * value(solution.line_R[p1, p2]) * 1000)
-        for (p1, p2) in solution.A
-    ]
+    ac_loss_rows = []
+    for (p1, p2) in solution.A:
+        a_val = _safe_value(solution.A[p1, p2])
+        r_val = _safe_value(solution.line_R[p1, p2])
+        loss = abs(a_val) * r_val * 1000 if not (math.isnan(a_val) or math.isnan(r_val)) else float('nan')
+        ac_loss_rows.append((str((p1, p2)), loss))
     ac_line_loss_df = pd.DataFrame(ac_loss_rows, columns=['index', 'P_LOSS_LINE [kW]'])
 
     # DC: P_loss = R * |A_DC|²  (A_DC = current)
     if has_dc:
-        dc_loss_rows = [
-            (str((p1, p2)), value(solution.dc_line_R[p1, p2]) * abs(value(solution.A_DC[p1, p2])) ** 2 * 1000)
-            for (p1, p2) in solution.A_DC
-        ]
+        dc_loss_rows = []
+        for (p1, p2) in solution.A_DC:
+            a_val = _safe_value(solution.A_DC[p1, p2])
+            r_val = _safe_value(solution.dc_line_R[p1, p2])
+            loss = r_val * abs(a_val) ** 2 * 1000 if not (math.isnan(a_val) or math.isnan(r_val)) else float('nan')
+            dc_loss_rows.append((str((p1, p2)), loss))
         dc_line_loss_df = pd.DataFrame(dc_loss_rows, columns=['index', 'P_LOSS_LINE [kW]'])
     else:
         dc_line_loss_df = pd.DataFrame(columns=['index', 'P_LOSS_LINE [kW]'])

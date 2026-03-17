@@ -90,11 +90,29 @@ def add_power_flow_constraints(model):
             + model.A[port1, port2] * (model.line_R[port1, port2] ** 2 + model.line_X[port1, port2] ** 2)
     model.voltage_balance_constraint = Constraint(model.LINES, rule=voltage_balance_rule)
 
-    # SOCP relaxation — makes the problem convex
+    # SOCP relaxation: A·V ≥ P² + Q²  (rotated second-order cone)
+    #
+    # The bilinear A·V term makes Gurobi treat P²+Q²−A·V ≤ 0 as nonconvex
+    # (indefinite Q matrix) and fall back to spatial branch-and-bound, which
+    # is numerically fragile.  To avoid this we introduce auxiliary variables
+    #     w = (A + V)/2,   z = (A − V)/2
+    # so  A·V = w² − z².  The constraint becomes  P²+Q²+z² ≤ w², which has
+    # Q = diag(1,1,1,−1) — exactly one negative eigenvalue.  Gurobi detects
+    # this as a standard second-order cone and solves it with the efficient
+    # conic solver instead of spatial B&B.
+
+    def soc_w_link(model, port1, port2):
+        return model.soc_w[port1, port2] == (model.A[port1, port2] + model.V[port1]) / 2
+    model.soc_w_link = Constraint(model.LINES, rule=soc_w_link)
+
+    def soc_z_link(model, port1, port2):
+        return model.soc_z[port1, port2] == (model.A[port1, port2] - model.V[port1]) / 2
+    model.soc_z_link = Constraint(model.LINES, rule=soc_z_link)
+
     def current_power_relation(model, port1, port2):
-        return (2 * model.P[port1]) ** 2 + (2 * model.Q[port1]) ** 2 + \
-            (model.A[port1, port2] - model.V[port1]) ** 2 - \
-            (model.A[port1, port2] + model.V[port1]) ** 2 <= 0
+        return (model.P[port1] ** 2 + model.Q[port1] ** 2
+                + model.soc_z[port1, port2] ** 2
+                <= model.soc_w[port1, port2] ** 2)
     model.current_power_relation = Constraint(model.LINES, rule=current_power_relation)
 
     def voltage_control_rule(model, pr, port):

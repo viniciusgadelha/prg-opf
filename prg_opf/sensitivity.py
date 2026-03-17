@@ -21,7 +21,7 @@ from prg_opf.io import load_input_excel
 from prg_opf.model import define_sets, define_parameters, define_variables
 from prg_opf.constraints import build_formulation
 from prg_opf.solver import run_optimization
-from prg_opf.results import _get_dc_voltage_ports
+from prg_opf.results import _get_dc_voltage_ports, _safe_value
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────
@@ -353,7 +353,7 @@ def run_sensitivity(base_input_file: str,
 
         tc = str(t)
         has_dc = hasattr(solution, 'A_DC')
-        objective_mw = value(solution.obj)
+        objective_mw = _safe_value(solution.obj, default=float('nan'))
 
         # Per-port results
         total_port_loss_kw = 0.0

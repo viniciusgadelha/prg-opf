@@ -109,6 +109,23 @@ def define_parameters(model, input_data):
     # Base parameters (voltage = V² as part of the linearization)
     model.V_ref = Param(initialize=params['Vbase_squared'])
     model.S_ref = Param(initialize=params['Sbase'])
+
+    # Auto-scale BigM: M only needs to exceed the maximum |P| at any port.
+    # A value much larger than the power scale degrades Gurobi numerics.
+    power_magnitudes = (
+        [abs(v) for v in input_data.get('terminal_port_p', {}).values()]
+        + [abs(v) for v in input_data.get('terminal_port_bus_p', {}).values()]
+        + [abs(v) for v in input_data['pq_port_p_setpoints'].values()]
+        + [v['Smax'] for v in input_data['ac_lines'].values()]
+        + [v['Smax'] for v in input_data['dc_lines'].values()]
+    )
+    max_power = max(power_magnitudes) if power_magnitudes else 1.0
+    data_M = max(max_power * 10, 100)          # 10× margin, floor 100
+    user_M = params['BigM']
+    if user_M > data_M:
+        print(f'NOTE: BigM={user_M:.0e} >> power scale (~{max_power:.1f}). '
+              f'Auto-capping to {data_M:.0f} for numerical stability.')
+        params['BigM'] = data_M
     model.M = Param(initialize=params['BigM'])
 
     # Per-port loss coefficients
@@ -131,6 +148,7 @@ def define_parameters(model, input_data):
         'pq_q_set': has_pq_q_set,
         'zero_p_ports': has_zero_p_ports,
     }
+
     return model, enable_constraints
 
 
@@ -159,6 +177,12 @@ def define_variables(model, enable_constraints):
 
     # Voltage (squared for AC, linear for DC)
     model.V = Var(model.PORT, within=NonNegativeReals)
+
+    # Auxiliary variables for SOC reformulation of A*V ≥ P²+Q²
+    # w = (A + V)/2,  z = (A - V)/2  →  A*V = w² - z²
+    # Then: P²+Q²+z² ≤ w²  is a standard second-order cone.
+    model.soc_w = Var(model.LINES, within=NonNegativeReals)
+    model.soc_z = Var(model.LINES)
 
     # Binary variable for Big-M loss decomposition
     model.y = Var(model.PORT, within=Binary)

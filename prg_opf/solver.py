@@ -51,6 +51,9 @@ def run_optimization(model, solver='gurobi', time_limit=600, verbose=True):
     opt.options['TimeLimit'] = time_limit
     opt.options['NonConvex'] = 2
     opt.options['BarHomogeneous'] = 1
+    opt.options['Aggregate'] = 0        # keep SOC auxiliary vars intact
+    opt.options['NumericFocus'] = 2     # careful numerics for node relaxations
+    opt.options['NodeMethod'] = 2       # barrier at B&B nodes for stability
     opt.options['LogFile'] = log_path
 
     print('\n####################################################')
@@ -68,10 +71,11 @@ def run_optimization(model, solver='gurobi', time_limit=600, verbose=True):
             f"The model may be infeasible. Check input data and constraints."
         )
     if tc == TerminationCondition.other:
-        print('\nWARNING: Sub-optimal solution found (numerical difficulties).')
+        print('\nWARNING: Sub-optimal solution found (numerical difficulties).'
+              '\n         Some results may be NaN.')
     print('\nMODEL SUCCESSFULLY SOLVED!')
 
-    if verbose:
+    if verbose and tc != TerminationCondition.other:
         print('\n####################################################')
         print('Showing results..')
         print('####################################################')
