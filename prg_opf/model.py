@@ -129,13 +129,30 @@ def define_parameters(model, input_data):
     model.M = Param(initialize=params['BigM'])
 
     # Per-port loss coefficients
-    model.port_loss_c0 = Param(model.PR_PORT, initialize=input_data['port_loss_c0'])
+    # Negative c0 values make P_LOSS infeasible at P=0 (any port type),
+    # so clamp them to 0 for a physically consistent nonnegative loss model.
+    c0_raw = input_data['port_loss_c0']
+    c0_clamped = {k: max(0.0, float(v)) for k, v in c0_raw.items()}
+    n_clamped = sum(1 for k in c0_raw if c0_raw[k] < 0)
+    if n_clamped > 0:
+        print(f'NOTE: Clamped {n_clamped} negative port_loss_c0 value(s) to 0.0 '
+              'to avoid infeasibility at P=0.')
+    model.port_loss_c0 = Param(model.PR_PORT, initialize=c0_clamped)
     model.port_loss_c1 = Param(model.PR_PORT, initialize=input_data['port_loss_c1'])
 
     # Ports with a forced P = 0 setpoint: the Big-M loss model is bypassed for
     # these ports (c0 < 0 would make P_LOSS_POS or P_LOSS_NEG go negative).
-    zero_p_ports = [port for (_, port), val
-                    in input_data['pq_port_p_setpoints'].items() if val == 0.0]
+    zero_p_ports = set()
+    for (_, port), val in input_data['pq_port_p_setpoints'].items():
+        if val == 0.0:
+            zero_p_ports.add(port)
+    for (_, port), val in input_data.get('terminal_port_p', {}).items():
+        if val == 0.0:
+            zero_p_ports.add(port)
+    for (_, port), val in input_data.get('terminal_port_bus_p', {}).items():
+        if val == 0.0:
+            zero_p_ports.add(port)
+    zero_p_ports = sorted(zero_p_ports)
     has_zero_p_ports = bool(zero_p_ports)
     if has_zero_p_ports:
         model.ZERO_P_PORT = Set(within=model.PORT, initialize=zero_p_ports)

@@ -48,16 +48,20 @@ def main():
         help='Skip interactive topology plot',
     )
     parser.add_argument(
-        '--sensitivity', action='store_true', default=False,
+        '-s','--sensitivity', action='store_true', default=False,
         help='Run sensitivity analysis mode (reads --sens-input, writes --sens-output)',
     )
     parser.add_argument(
-        '--sens-input', default='data/sens_input.xlsx',
+        '-si','--sens-input', default='data/sens_input.xlsx',
         help='Path to sensitivity input file (default: data/sens_input.xlsx)',
     )
     parser.add_argument(
-        '--sens-output', default='results/sens_results_.xlsx',
-        help='Path to sensitivity results file (default: results/sens_results_.xlsx)',
+        '-so','--sens-output', default='results/sens_results.xlsx',
+        help='Path to sensitivity results file (default: results/sens_results.xlsx)',
+    )
+    parser.add_argument(
+        '-st', '--slack-tree', action='store_true', default=False,
+        help='Run slack-tree analysis: enumerate all spanning trees and solve OPF for each',
     )
     args = parser.parse_args()
 
@@ -81,7 +85,32 @@ def main():
                 args.input,
                 sens_results_file=args.sens_output,
                 sens_input_file=args.sens_input,
-                save_path='results/prg_sensitivity_interactive.html',
+                save_path='results/prg_sensitivity.html',
+            )
+        return
+
+    # ── Slack-tree analysis mode ───────────────────────────────────────
+    if args.slack_tree:
+        from prg_opf.slack_tree import run_slack_tree_analysis
+        _, tree_data_list = run_slack_tree_analysis(
+            base_input_file=args.input,
+            output_file=args.sens_output,
+            solver=args.solver,
+            time_limit=args.time_limit,
+            plot=args.plot,
+            plot_path='results/slack_trees.html',
+            verbose=True,
+        )
+        elapsed = time.time() - start_time
+        print(f'\n--- Total time elapsed: {elapsed:.2f} seconds ---')
+        if args.plot:
+            from prg_opf.plotting import plot_sensitivity_interactive
+            plot_sensitivity_interactive(
+                args.input,
+                sens_results_file=args.sens_output,
+                save_path='results/prg_sensitivity.html',
+                title='Power Router Grid  \u2013  Slack Tree Analysis',
+                data_per_timestep=tree_data_list,
             )
         return
 
@@ -118,7 +147,7 @@ def main():
         plot_prg_interactive(
             args.input,
             results_file=results_file,
-            save_path='results/prg_topology_interactive.html',
+            save_path='results/prg_topology.html',
         )
 
 

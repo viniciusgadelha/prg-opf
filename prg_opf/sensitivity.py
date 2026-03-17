@@ -347,9 +347,40 @@ def run_sensitivity(base_input_file: str,
         model, enable = define_parameters(model, input_data)
         model = define_variables(model, enable)
         model = build_formulation(model, enable, input_data)
-        solution = run_optimization(model, solver=solver,
-                                    time_limit=time_limit,
-                                    verbose=verbose)
+
+        try:
+            solution = run_optimization(model, solver=solver,
+                                        time_limit=time_limit,
+                                        verbose=verbose,
+                                        raise_on_fail=False)
+        except Exception as e:
+            print(f'  ERROR solving timestep {t}: {e}')
+            summary_rows.append({
+                'Timestep': t, 'Termination': 'error', 'MIP Gap': None,
+                'Objective (MW)': float('nan'), 'Total Loss (kW)': float('nan'),
+                'AC Line Loss (kW)': float('nan'), 'DC Line Loss (kW)': float('nan'),
+                'Port Loss (kW)': float('nan'), 'AC Line Loss (%)': float('nan'),
+                'DC Line Loss (%)': float('nan'), 'Port Loss (%)': float('nan'),
+                'Total Loss (%)': float('nan'), 'Ref Power (kW)': float('nan'),
+            })
+            continue
+
+        solve_status = getattr(solution, '_solve_status', 'unknown')
+        solve_gap = getattr(solution, '_solve_gap', None)
+        _feasible = solve_status in ('optimal', 'locallyOptimal', 'feasible', 'other')
+
+        if not _feasible:
+            if verbose:
+                print(f'  Timestep {t}: {solve_status} -- skipping result extraction')
+            summary_rows.append({
+                'Timestep': t, 'Termination': solve_status, 'MIP Gap': solve_gap,
+                'Objective (MW)': float('nan'), 'Total Loss (kW)': float('nan'),
+                'AC Line Loss (kW)': float('nan'), 'DC Line Loss (kW)': float('nan'),
+                'Port Loss (kW)': float('nan'), 'AC Line Loss (%)': float('nan'),
+                'DC Line Loss (%)': float('nan'), 'Port Loss (%)': float('nan'),
+                'Total Loss (%)': float('nan'), 'Ref Power (kW)': float('nan'),
+            })
+            continue
 
         tc = str(t)
         has_dc = hasattr(solution, 'A_DC')
@@ -441,6 +472,8 @@ def run_sensitivity(base_input_file: str,
 
         summary_rows.append({
             'Timestep': t,
+            'Termination': solve_status,
+            'MIP Gap': solve_gap,
             'Objective (MW)': objective_mw,
             'Total Loss (kW)': total_loss_kw,
             'AC Line Loss (kW)': full_ac_loss_kw,

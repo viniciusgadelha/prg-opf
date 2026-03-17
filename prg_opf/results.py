@@ -165,11 +165,42 @@ def export_results(solution, input_data=None, path=None, label=''):
     for df in [dc_current_df, relaxation_df, all_line_loss_df]:
         lines_df = lines_df.merge(df, on='index', how='outer')
 
+    # Aggregate loss totals (for Summary sheet and plotting metadata)
+    try:
+        ac_line_loss_kw = float(all_line_loss_df[all_line_loss_df['index'].isin(ac_line_loss_df['index'])]
+                                ['P_LOSS_LINE [kW]'].sum())
+    except Exception:
+        ac_line_loss_kw = float('nan')
+    try:
+        dc_line_loss_kw = float(all_line_loss_df[all_line_loss_df['index'].isin(dc_line_loss_df['index'])]
+                                ['P_LOSS_LINE [kW]'].sum())
+    except Exception:
+        dc_line_loss_kw = float('nan')
+    try:
+        port_loss_kw = float(sum(abs(v) for v in losses_df['P_LOSS'].dropna()) * 1000)
+    except Exception:
+        port_loss_kw = float('nan')
+
+    solve_status = getattr(solution, '_solve_status', 'unknown')
+    solve_gap = getattr(solution, '_solve_gap', None)
+    solve_time = getattr(solution, '_solve_time', None)
+
+    summary_df = pd.DataFrame([{
+        'Termination': solve_status,
+        'MIP Gap': solve_gap,
+        'Solve Time (s)': solve_time,
+        'Objective (MW)': objective,
+        'AC Line Loss (kW)': ac_line_loss_kw,
+        'DC Line Loss (kW)': dc_line_loss_kw,
+        'Port Loss (kW)': port_loss_kw,
+    }])
+
     # Write Excel
-    output_file = os.path.join(path, f'optimization_results_{label}.xlsx')
+    output_file = os.path.join(path, f'optimization_results{label}.xlsx')
     with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
         nodes_df.to_excel(writer, sheet_name='nodes', index=False)
         lines_df.to_excel(writer, sheet_name='lines', index=False)
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
 
     # Summary
     print(f'\n--- Results Summary ---')

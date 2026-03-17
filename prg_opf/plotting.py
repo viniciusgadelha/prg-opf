@@ -91,10 +91,10 @@ C = {
 }
 
 # Sizing
-PR_W = 0.8     # full width  of a PR box  (scaled down 50%)
-PR_H = 0.6     # full height of a PR box  (scaled down 50%)
-BUS_W = 0.55   # full width  of a bus box (slightly smaller than PR)
-BUS_H = 0.40   # full height of a bus box
+PR_W = 1.4    # full width  of a PR box  (scaled down 50%)
+PR_H = 1.2     # full height of a PR box  (scaled down 50%)
+BUS_W = 0.65   # full width  of a bus box (slightly smaller than PR)
+BUS_H = 0.50   # full height of a bus box
 PORT_R = 19    # marker size for all ports (uniform)
 
 
@@ -220,6 +220,39 @@ def _load_results(results_file: str) -> dict | None:
             results["port_loss_kw"] = sum(abs(v) for v in results["P_LOSS"].values()) * 1000
         except Exception:
             pass
+
+    # Optional Summary sheet metadata (single-run export)
+    try:
+        sdf = pd.read_excel(results_file, sheet_name="Summary")
+        if not sdf.empty:
+            r0 = sdf.iloc[0]
+            for col, key in [
+                ("Objective (MW)", "objective"),
+                ("AC Line Loss (kW)", "ac_line_loss_kw"),
+                ("DC Line Loss (kW)", "dc_line_loss_kw"),
+                ("Port Loss (kW)", "port_loss_kw"),
+            ]:
+                try:
+                    val = r0[col]
+                    if pd.notna(val):
+                        results[key] = float(val)
+                except (KeyError, TypeError, ValueError):
+                    pass
+            try:
+                t = r0["Termination"]
+                if pd.notna(t):
+                    results["solve_status"] = str(t)
+            except (KeyError, TypeError):
+                pass
+            try:
+                g = r0["MIP Gap"]
+                if pd.notna(g):
+                    results["solve_gap"] = float(g)
+            except (KeyError, TypeError, ValueError):
+                pass
+    except Exception:
+        pass
+
     return results if results else None
 
 
@@ -233,12 +266,36 @@ def _make_losses_annotation(results: dict) -> dict:
     def _pct(x: float) -> str:
         return f"{x / obj_kw * 100:.1f}% of total" if obj_kw > 1e-9 else "N/A"
 
-    text = (
-        f"<b>Total Losses: {obj_kw:.2f} kW</b>"
-        f"<br>Port Losses:   {port_kw:.2f} kW  ({_pct(port_kw)})"
-        f"<br>AC Lines:      {ac_kw:.2f} kW  ({_pct(ac_kw)})"
-        f"<br>DC Lines:      {dc_kw:.2f} kW  ({_pct(dc_kw)})"
-    )
+    # ── Solver status line ────────────────────────────────────────────
+    solve_status = results.get("solve_status")
+    solve_gap = results.get("solve_gap")
+    status_line = ""
+    if solve_status:
+        s = str(solve_status)
+        if s == "optimal":
+            color, icon = "#2ca02c", "&#10003;"   # green check
+        elif s in ("locallyOptimal", "feasible", "other"):
+            color, icon = "#ff7f0e", "&#9888;"    # orange warning
+        else:
+            color, icon = "#d62728", "&#10007;"   # red X
+        gap_str = (f"  |  gap: {solve_gap:.2e}"
+                   if solve_gap is not None else "")
+        status_line = (f'<span style="color:{color}"><b>{icon} {s}'
+                       f'</b></span>{gap_str}<br>')
+
+    is_nan = obj_kw != obj_kw  # NaN check
+    if is_nan:
+        text = (status_line
+                + "<b>Total Losses: N/A</b>"
+                + "<br>No feasible solution")
+    else:
+        text = (
+            status_line
+            + f"<b>Total Losses: {obj_kw:.2f} kW</b>"
+            f"<br>Port Losses:   {port_kw:.2f} kW  ({_pct(port_kw)})"
+            f"<br>AC Lines:      {ac_kw:.2f} kW  ({_pct(ac_kw)})"
+            f"<br>DC Lines:      {dc_kw:.2f} kW  ({_pct(dc_kw)})"
+        )
     return dict(
         text=text,
         xref="paper", yref="paper",
@@ -304,6 +361,18 @@ def _load_sens_results_for_timestep(cache: dict, timestep) -> dict | None:
                     results[key] = float(r0[col])
                 except (KeyError, ValueError, TypeError):
                     pass
+            # Solver status metadata
+            try:
+                results["solve_status"] = str(r0["Termination"])
+            except (KeyError, TypeError):
+                pass
+            try:
+                gap_val = r0.get("MIP Gap")
+                if gap_val is not None and not (isinstance(gap_val, float)
+                                                and gap_val != gap_val):
+                    results["solve_gap"] = float(gap_val)
+            except (KeyError, TypeError, ValueError):
+                pass
 
     return results if results else None
 
@@ -1536,9 +1605,17 @@ def plot_sensitivity_interactive(
     save_path: str | None = None,
     show: bool = True,
     title: str | None = None,
+    data_per_timestep: list[dict] | None = None,
 ) -> go.Figure:
     """
     Topology plot with a timestep slider for sensitivity analysis results.
+
+    Parameters
+    ----------
+    data_per_timestep : optional list of input_data dicts, one per timestep.
+        When provided (e.g. from slack-tree analysis), these are used directly
+        for port types and line classification per frame, instead of applying
+        sens_input overrides on top of the base topology.
     """
     data = load_input_excel(input_file)
     pos, bus_angles = _build_layout(data)
@@ -1645,7 +1722,9 @@ def plot_sensitivity_interactive(
 
     all_results = [_load_sens_results_for_timestep(cache, t) for t in timesteps]
     results_0 = all_results[0] or {}
-    data_0 = _apply_sens_overrides(data, timesteps[0])
+    data_0 = (data_per_timestep[0]
+              if data_per_timestep and len(data_per_timestep) > 0
+              else _apply_sens_overrides(data, timesteps[0]))
 
     # ── Base figure (T=0) ─────────────────────────────────────────────
     fig = go.Figure()
@@ -1673,9 +1752,11 @@ def plot_sensitivity_interactive(
 
     # ── Frames (one per timestep) ──────────────────────────────────────────────
     frames = []
-    for t, results_t in zip(timesteps, all_results):
+    for t_idx, (t, results_t) in enumerate(zip(timesteps, all_results)):
         rt = results_t or {}
-        data_t = _apply_sens_overrides(data, t)
+        data_t = (data_per_timestep[t_idx]
+                  if data_per_timestep and t_idx < len(data_per_timestep)
+                  else _apply_sens_overrides(data, t))
         temp = go.Figure()
         _draw_busbars(temp, pos, data_t, bus_angles)
         if bus_angles:
