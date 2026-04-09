@@ -169,6 +169,8 @@ def _compute_q_exempt(input_data):
     q_zero = set()
     for _, p in input_data['sets']['EXT_GRID']:
         q_zero.add(p)
+    for _, p in input_data['sets']['PQ_PORT']:
+        q_zero.add(p)
     for _, p in input_data['sets']['SLACK_PORT']:
         q_zero.add(p)
     for (pr, p), q_val in input_data.get('terminal_port_q', {}).items():
@@ -184,11 +186,19 @@ def _compute_q_exempt(input_data):
 
 
 def add_reactive_constraints(model, q_exempt):
-    """Force Q=0 on slack and ext_grid ports (with exemptions)."""
+    """Force Q=0 on PQ, slack, and ext_grid ports so only V_PORT provides Q."""
 
-    def reactive_power_flow_forced(model):
-        return [model.Q[port] == 0 for (pr, port) in model.SLACK_PORT]
-    model.reactive_power_flow_forced = ConstraintList(rule=reactive_power_flow_forced)
+    def reactive_power_pq_forced(model, pr, p):
+        if p in q_exempt:
+            return Constraint.Skip
+        return model.Q[p] == 0
+    model.reactive_power_pq_forced = Constraint(model.PQ_PORT, rule=reactive_power_pq_forced)
+
+    def reactive_power_slack_forced(model, pr, p):
+        if p in q_exempt:
+            return Constraint.Skip
+        return model.Q[p] == 0
+    model.reactive_power_slack_forced = Constraint(model.SLACK_PORT, rule=reactive_power_slack_forced)
 
     def reactive_power_flow_ext_grid(model, pr, p):
         if p in q_exempt:
