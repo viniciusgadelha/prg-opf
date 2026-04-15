@@ -115,9 +115,34 @@ def add_power_flow_constraints(model):
                 <= model.soc_w[port1, port2] ** 2)
     model.current_power_relation = Constraint(model.LINES, rule=current_power_relation)
 
-    def voltage_control_rule(model, pr, port):
-        return model.V[port] == model.v_port_voltage[pr, port]
-    model.voltage_control_rule = Constraint(model.V_PORT, rule=voltage_control_rule)
+    def voltage_control_lb(model, pr, port):
+        return model.V[port] >= model.v_port_voltage_min[pr, port]
+    model.voltage_control_lb = Constraint(model.V_PORT, rule=voltage_control_lb)
+
+    def voltage_control_ub(model, pr, port):
+        return model.V[port] <= model.v_port_voltage_max[pr, port]
+    model.voltage_control_ub = Constraint(model.V_PORT, rule=voltage_control_ub)
+
+
+# ── Line thermal limit constraints ───────────────────────────────────────
+
+def add_line_thermal_constraints(model):
+    """Enforce apparent power limits on AC lines as soft constraints.
+
+    P² + Q² ≤ (Smax + S_over)²  — overload slack is penalized in the objective.
+    """
+
+    def line_thermal_from(model, port1, port2):
+        return (model.P[port1] ** 2 + model.Q[port1] ** 2
+                <= (model.line_smax[port1, port2]
+                    + model.S_over_from[port1, port2]) ** 2)
+    model.line_thermal_from = Constraint(model.LINES, rule=line_thermal_from)
+
+    def line_thermal_to(model, port1, port2):
+        return (model.P[port2] ** 2 + model.Q[port2] ** 2
+                <= (model.line_smax[port1, port2]
+                    + model.S_over_to[port1, port2]) ** 2)
+    model.line_thermal_to = Constraint(model.LINES, rule=line_thermal_to)
 
 
 # ── Terminal port constraints ────────────────────────────────────────────
@@ -250,7 +275,7 @@ def add_bus_constraints(model):
 # ── DC line constraints ──────────────────────────────────────────────────
 
 def add_dc_constraints(model):
-    """DC line power flow and voltage balance (only if DC lines exist)."""
+    """DC line power flow, voltage balance, and soft thermal limits."""
 
     # IMPORTANT: V for DC ports is in kV (not kV²)
     def active_power_flow_rule_DC1(model, port1, port2):
@@ -270,11 +295,28 @@ def add_dc_constraints(model):
             model.dc_line_R[port1, port2] * model.A_DC[port1, port2]
     model.voltage_balance_rule_DC = Constraint(model.DC_LINES, rule=voltage_balance_rule_DC)
 
+    # Soft DC thermal limits: |P| ≤ Smax + S_over
+    def dc_thermal_from(model, port1, port2):
+        return (model.P[port1] ** 2
+                <= (model.dc_line_smax[port1, port2]
+                    + model.S_over_dc_from[port1, port2]) ** 2)
+    model.dc_thermal_from = Constraint(model.DC_LINES, rule=dc_thermal_from)
+
+    def dc_thermal_to(model, port1, port2):
+        return (model.P[port2] ** 2
+                <= (model.dc_line_smax[port1, port2]
+                    + model.S_over_dc_to[port1, port2]) ** 2)
+    model.dc_thermal_to = Constraint(model.DC_LINES, rule=dc_thermal_to)
+
 
 # ── Objective function ───────────────────────────────────────────────────
 
+# ── Overload penalty weight ──────────────────────────────────────────────
+OVERLOAD_PENALTY = 10   # large cost per MVA of thermal overload
+
+
 def add_objective(model, has_dc):
-    """Minimize total losses (AC line + converter losses + DC line)."""
+    """Minimize total losses + overload penalty."""
 
     if has_dc:
         def obj_rule(model):
@@ -284,6 +326,12 @@ def add_objective(model, has_dc):
                 + sum(model.P_LOSS[port[1]] for port in model.PR_PORT)
                 + sum(model.dc_line_R[p1, p2] * model.A_DC[p1, p2] ** 2
                       for (p1, p2) in model.DC_LINES)
+                + OVERLOAD_PENALTY * sum(
+                    model.S_over_from[p1, p2] + model.S_over_to[p1, p2]
+                    for (p1, p2) in model.LINES)
+                + OVERLOAD_PENALTY * sum(
+                    model.S_over_dc_from[p1, p2] + model.S_over_dc_to[p1, p2]
+                    for (p1, p2) in model.DC_LINES)
             )
         model.obj = Objective(rule=obj_rule, sense=minimize)
     else:
@@ -292,6 +340,9 @@ def add_objective(model, has_dc):
                 sum(model.line_R[p1, p2] * model.A[p1, p2]
                     for (p1, p2) in model.LINES)
                 + sum(model.P_LOSS[port[1]] for port in model.PR_PORT)
+                + OVERLOAD_PENALTY * sum(
+                    model.S_over_from[p1, p2] + model.S_over_to[p1, p2]
+                    for (p1, p2) in model.LINES)
             )
         model.obj = Objective(rule=obj_rule, sense=minimize)
 
@@ -319,6 +370,7 @@ def build_formulation(model, enable_constraints, input_data):
 
     add_port_loss_constraints(model, enable_constraints)
     add_power_flow_constraints(model)
+    add_line_thermal_constraints(model)
     add_terminal_constraints(model, enable_constraints)
     add_pq_setpoint_constraints(model, enable_constraints)
     add_reactive_constraints(model, q_exempt)

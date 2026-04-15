@@ -158,12 +158,33 @@ def export_results(solution, input_data=None, path=None, label=''):
 
     all_line_loss_df = pd.concat([ac_line_loss_df, dc_line_loss_df], ignore_index=True)
 
-    for df in [current_df, dc_current_df, relaxation_df, all_line_loss_df]:
+    # --- Overload (thermal slack) ---
+    overload_rows = []
+    for (p1, p2) in solution.S_over_from:
+        s_from = _safe_value(solution.S_over_from[p1, p2])
+        s_to = _safe_value(solution.S_over_to[p1, p2])
+        overload = max(s_from, s_to) if not (math.isnan(s_from) or math.isnan(s_to)) else float('nan')
+        overload_rows.append((str((p1, p2)), overload))
+    if has_dc:
+        for (p1, p2) in solution.S_over_dc_from:
+            s_from = _safe_value(solution.S_over_dc_from[p1, p2])
+            s_to = _safe_value(solution.S_over_dc_to[p1, p2])
+            overload = max(s_from, s_to) if not (math.isnan(s_from) or math.isnan(s_to)) else float('nan')
+            overload_rows.append((str((p1, p2)), overload))
+    overload_df = pd.DataFrame(overload_rows, columns=['index', 'Overload [MVA]'])
+
+    for df in [current_df, dc_current_df, relaxation_df, all_line_loss_df, overload_df]:
         df['index'] = df['index'].astype(str)
 
     lines_df = current_df
-    for df in [dc_current_df, relaxation_df, all_line_loss_df]:
+    for df in [dc_current_df, relaxation_df, all_line_loss_df, overload_df]:
         lines_df = lines_df.merge(df, on='index', how='outer')
+
+    # Print overloaded lines
+    for _, row in overload_df.iterrows():
+        ov = row['Overload [MVA]']
+        if not math.isnan(ov) and ov > 1e-6:
+            print(f'  WARNING: Line {row["index"]} overloaded by {ov:.4f} MVA')
 
     # Aggregate loss totals (for Summary sheet and plotting metadata)
     try:

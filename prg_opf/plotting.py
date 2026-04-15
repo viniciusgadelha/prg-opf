@@ -201,6 +201,7 @@ def _load_results(results_file: str) -> dict | None:
                         pass
         _parse_line_col(ldf, "I [kA]", "I")
         _parse_line_col(ldf, "I_DC [kA]", "I_DC")
+        _parse_line_col(ldf, "Overload [MVA]", "overload")
         if "P_LOSS_LINE [kW]" in ldf.columns:
             results["line_loss"] = {}
             for _, row in ldf.iterrows():
@@ -1279,6 +1280,17 @@ def _draw_lines(fig: go.Figure, pos: dict, data: dict,
             pv = results.get("P", {}).get(p1)
             if pv is not None:
                 hover += f"<br>P_send = {pv:.4f} MW"
+            qv = results.get("Q", {}).get(p1)
+            smax = vals["Smax"]
+            if pv is not None and qv is not None and smax > 0:
+                loading = math.sqrt(pv ** 2 + qv ** 2) / smax * 100
+                hover += f"<br><b>Loading = {loading:.1f}%</b>"
+            elif pv is not None and smax > 0:
+                loading = abs(pv) / smax * 100
+                hover += f"<br><b>Loading = {loading:.1f}%</b>"
+            ov = results.get("overload", {}).get((p1, p2))
+            if ov is not None and ov > 1e-6:
+                hover += f"<br><span style='color:red'><b>OVERLOAD = {ov:.4f} MVA</b></span>"
             lossv = results.get("line_loss", {}).get((p1, p2))
             if lossv is not None:
                 hover += f"<br>P_LOSS = {lossv:.2f} kW"

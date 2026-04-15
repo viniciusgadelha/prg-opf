@@ -77,9 +77,17 @@ def define_parameters(model, input_data):
         model.terminal_port_bus_Q = Param(model.TERMINAL_PORT_BUS,
                                           initialize=input_data['terminal_port_bus_q'])
 
-    # Voltage-controlled ports
+    # Voltage-controlled ports — nominal value and ±10% bounds (in kV² space)
     model.V_PORT = Set(dimen=2, within=model.PR_PORT, initialize=input_data['v_ports'])
     model.v_port_voltage = Param(model.V_PORT, initialize=input_data['v_port_values'])
+    model.v_port_voltage_min = Param(
+        model.V_PORT,
+        initialize={k: v * 0.81 for k, v in input_data['v_port_values'].items()},
+    )
+    model.v_port_voltage_max = Param(
+        model.V_PORT,
+        initialize={k: v * 1.21 for k, v in input_data['v_port_values'].items()},
+    )
 
     # Optional fixed setpoints for PQ ports
     has_pq_p_set = bool(input_data['pq_port_p_setpoints'])
@@ -203,5 +211,12 @@ def define_variables(model, enable_constraints):
 
     # Binary variable for Big-M loss decomposition
     model.y = Var(model.PORT, within=Binary)
+
+    # Slack variables for soft thermal limits (line overload)
+    model.S_over_from = Var(model.LINES, within=NonNegativeReals)
+    model.S_over_to = Var(model.LINES, within=NonNegativeReals)
+    if enable_constraints['dc_lines']:
+        model.S_over_dc_from = Var(model.DC_LINES, within=NonNegativeReals)
+        model.S_over_dc_to = Var(model.DC_LINES, within=NonNegativeReals)
 
     return model
